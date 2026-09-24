@@ -20,6 +20,7 @@ const prompt = $<HTMLTextAreaElement>("prompt");
 const sendBtn = $<HTMLButtonElement>("send-btn");
 const newBtn = $<HTMLButtonElement>("new-btn");
 const unarchiveBtn = $<HTMLButtonElement>("unarchive-btn");
+const suggest = $<HTMLDivElement>("suggest");
 
 const daemon = new DaemonClient({ url: DAEMON_URL, clientId: "paseo-graphite", clientType: "browser" });
 const paseo = createPaseoApi(daemon);
@@ -241,6 +242,55 @@ async function send() {
   }
 }
 
+type Command = Awaited<ReturnType<typeof daemon.listCommands>>["commands"][number];
+const commandCache = new Map<string, Promise<Command[]>>();
+let suggestions: Command[] = [];
+let suggestIndex = 0;
+
+// Paseo returns nothing before a session exists, so a new session's first message gets no suggestions.
+async function updateSuggestions() {
+  const query = prompt.value.match(/^\/(\S*)$/)?.[1];
+  const id = selectedId;
+  if (query === undefined || !id || isCreating()) return closeSuggestions();
+  if (!commandCache.has(id)) commandCache.set(id, daemon.listCommands(id).then((r) => r.commands, () => []));
+  const commands = await commandCache.get(id)!;
+  if (prompt.value.match(/^\/(\S*)$/)?.[1] !== query) return;
+  const q = query.toLowerCase();
+  suggestions = commands
+    .filter((c) => c.name.toLowerCase().includes(q))
+    .sort((a, b) => Number(!a.name.toLowerCase().startsWith(q)) - Number(!b.name.toLowerCase().startsWith(q)) || a.name.localeCompare(b.name))
+    .slice(0, 50);
+  suggestIndex = 0;
+  if (!suggestions.length) return closeSuggestions();
+  renderSuggestions();
+}
+
+function renderSuggestions() {
+  suggest.hidden = false;
+  suggest.replaceChildren(
+    ...suggestions.map((c, i) => {
+      const row = el("div", { className: `cmd${i === suggestIndex ? " active" : ""}`, title: c.description }, el("b", { textContent: `/${c.name}` }), el("span", { textContent: c.argumentHint || c.description }));
+      // mousedown, not click: click would blur the prompt and close the list first.
+      row.onmousedown = (e) => (e.preventDefault(), pickSuggestion(i));
+      return row;
+    }),
+  );
+  suggest.children[suggestIndex]?.scrollIntoView({ block: "nearest" });
+}
+
+function pickSuggestion(i: number) {
+  const c = suggestions[i];
+  if (!c) return;
+  prompt.value = `/${c.name} `;
+  closeSuggestions();
+  prompt.focus();
+}
+
+function closeSuggestions() {
+  suggest.hidden = true;
+  suggestions = [];
+}
+
 async function syncActiveTab(force = false) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   tabUrl = tab?.url;
@@ -278,10 +328,32 @@ unarchiveBtn.onclick = async () => {
   }
 };
 prompt.onkeydown = (e) => {
-  if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+  if (e.isComposing) return;
+  if (!suggest.hidden) {
+    const move = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+    if (move) {
+      e.preventDefault();
+      suggestIndex = (suggestIndex + move + suggestions.length) % suggestions.length;
+      renderSuggestions();
+      return;
+    }
+    if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
+      e.preventDefault();
+      pickSuggestion(suggestIndex);
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeSuggestions();
+      return;
+    }
+  }
+  if (e.key !== "Enter" || e.shiftKey) return;
   e.preventDefault();
   void send();
 };
+prompt.oninput = () => void updateSuggestions();
+prompt.onblur = () => closeSuggestions();
 openInPaseo.onclick = (e) => {
   e.preventDefault();
   if (openInPaseo.href.startsWith("paseo:")) void chrome.tabs.update({ url: openInPaseo.href });
