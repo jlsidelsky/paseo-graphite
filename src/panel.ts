@@ -3,7 +3,28 @@ import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import MarkdownIt from "markdown-it";
 import { diffStrings, parseUnifiedDiff, type DiffLine } from "./diff";
 import { isAnswered, parseQuestions, questionResponse, showsText, type Question } from "./question";
-import { agentsOnPr, DAEMON_URL, isPrWorkspace as onPr, isRepo, parsePr, prLabel, sessionsForPr, SETTINGS, stackOf, type Pr, type StackPr, type Workspace } from "./pr";
+import {
+  agentsOnPr,
+  agentsOnTicket,
+  DAEMON_URL,
+  groupAll,
+  isPrWorkspace as onPr,
+  isRepo,
+  isTicketWorkspace,
+  listSessions,
+  parsePr,
+  parseTicket,
+  prLabel,
+  SETTINGS,
+  stackOf,
+  ticketBranch,
+  ticketLabel,
+  ticketTitle,
+  type Pr,
+  type StackPr,
+  type Ticket,
+  type Workspace,
+} from "./pr";
 
 const NEW_WORKTREE = "__new__";
 
@@ -30,6 +51,7 @@ const contextEl = $<HTMLSpanElement>("context");
 const attachmentsEl = $<HTMLDivElement>("attachments");
 const settingsBtn = $<HTMLButtonElement>("settings-btn");
 const settingsBox = $<HTMLDivElement>("settings");
+const pinBtn = $<HTMLButtonElement>("pin-btn");
 
 const daemon = new DaemonClient({ url: DAEMON_URL, clientId: "paseo-graphite", clientType: "browser" });
 const paseo = createPaseoApi(daemon);
@@ -38,9 +60,13 @@ type TimelineEntry = Awaited<ReturnType<ReturnType<typeof paseo.agents.ref>["tim
 type Permission = PaseoAgent["pendingPermissions"][number];
 type RewindMode = "conversation" | "files" | "both";
 
+// What the panel shows: a PR, a Linear ticket, or (neither) every session.
 let pr: Pr | null = null;
-let tabUrl: string | undefined;
+let ticket: Ticket | null = null;
+let pinned = false;
 let workspaces: Workspace[] = [];
+// Every session the daemon knows, archived included; `agents` is the shown context's.
+let everyone: PaseoAgent[] = [];
 let agents: PaseoAgent[] = [];
 // Sessions on other PRs in the same stack; `agents` stays the current PR's.
 let stackGroups: { pr: StackPr; agents: PaseoAgent[] }[] = [];
@@ -50,8 +76,10 @@ let selectedId: string | null = null;
 let unsubscribeTimeline: (() => void) | null = null;
 let refetchTimer: ReturnType<typeof setTimeout> | undefined;
 let images: { data: string; mimeType: string }[] = [];
-let prPrefill = "";
+let prefill = "";
 let agentsLive: Promise<unknown> | undefined;
+let allTimer: ReturnType<typeof setTimeout> | undefined;
+let lastStatus = "";
 
 const isPrWorkspace = (w: Workspace) => onPr(w, pr);
 
@@ -67,25 +95,28 @@ function markdown(text: string) {
   return node;
 }
 
+const viewKey = (p = pr, t = ticket) => (p ? prLabel(p) : t ? ticketLabel(t.id) : "all");
+const viewName = () => (pr ? `PR #${pr.number}` : ticket ? ticket.id : "All sessions");
+
 function setStatus(text: string) {
-  statusText.textContent = text;
+  lastStatus = text;
+  const name = viewName();
+  statusText.textContent = !pinned ? text : text === name ? `Pinned · ${name}` : `Pinned · ${name} · ${text}`;
 }
 
 const isCreating = () => document.body.classList.contains("creating");
 
 async function loadSessions() {
-  if (!pr) {
-    agentSelect.replaceChildren(el("option", { textContent: "Open a Graphite PR" }));
-    selectAgent(null);
-    return;
-  }
-  const target = pr;
-  const loaded = await sessionsForPr(paseo, target);
+  const [target, t] = [pr, ticket];
+  const loaded = await listSessions(paseo);
+  if (pr !== target || ticket !== t) return;
   workspaces = loaded.workspaces;
-  agents = [...loaded.agents.filter((a) => !a.archivedAt), ...loaded.agents.filter((a) => a.archivedAt)];
+  everyone = loaded.all;
+  const mine = target ? agentsOnPr(workspaces, everyone, target) : t ? agentsOnTicket(workspaces, everyone, t.id) : everyone.filter((a) => !a.archivedAt);
+  agents = [...mine.filter((a) => !a.archivedAt), ...mine.filter((a) => a.archivedAt)];
   stackGroups = [];
   renderPicker();
-  void loadStack(target, loaded.all);
+  if (target) void loadStack(target, everyone);
 }
 
 async function loadStack(target: Pr, all: PaseoAgent[]) {
@@ -112,12 +143,12 @@ const listed = () => [...agents, ...stackGroups.flatMap((g) => g.agents)];
 const optionLabel = (a: PaseoAgent) => `${a.status === "running" ? "● " : ""}${a.archivedAt ? "(archived) " : ""}${a.title ?? a.id.slice(0, 8)}`;
 
 function renderPicker() {
-  if (!pr) return;
+  if (!pr && !ticket) return renderAll();
   const option = (a: PaseoAgent) => el("option", { value: a.id, textContent: optionLabel(a) });
   const active = agents.filter((a) => !a.archivedAt);
   const archived = agents.filter((a) => a.archivedAt);
   agentSelect.replaceChildren(
-    ...(agents.length ? active.map(option) : [el("option", { value: "", textContent: `No sessions for #${pr.number}` })]),
+    ...(agents.length ? active.map(option) : [el("option", { value: "", textContent: `No sessions for ${pr ? `#${pr.number}` : ticket?.id}` })]),
     ...(archived.length ? [el("optgroup", { label: "Archived" }, ...archived.map(option))] : []),
     ...stackGroups.map((g) => el("optgroup", { label: `Stack · #${g.pr.number} ${g.pr.title}` }, ...g.agents.map(option))),
   );
@@ -125,6 +156,42 @@ function renderPicker() {
   const keep = listed().find((a) => a.id === selectedId)?.id ?? agents[0]?.id ?? stackGroups[0]?.agents[0]?.id ?? null;
   agentSelect.value = keep ?? "";
   if (keep !== selectedId || !unsubscribeTimeline) selectAgent(keep);
+}
+
+const groups = () => {
+  const g = groupAll(agents);
+  return [["Needs you", g.needs], ["Running", g.running], ["Recently finished", g.finished]] as const;
+};
+
+// The PR or ticket a session belongs to, for the all-sessions list.
+function whereOf(a: PaseoAgent) {
+  const labels = Object.keys(a.labels ?? {});
+  const n = workspaces.find((w) => w.id === a.workspaceId)?.githubRuntime?.pullRequest?.number ?? labels.find((l) => l.startsWith("pr:"))?.split("#")[1];
+  return [labels.find((l) => l.startsWith("ticket:"))?.slice(7), n && `#${n}`].filter(Boolean).join(" · ");
+}
+
+function renderAll() {
+  // The picker is hidden behind the new-session form; closing the form reloads it.
+  if (isCreating()) return;
+  const option = (a: PaseoAgent) => el("option", { value: a.id, textContent: [optionLabel(a), whereOf(a)].filter(Boolean).join(" · ") });
+  const shown = groups().filter(([, list]) => list.length);
+  agentSelect.replaceChildren(
+    el("option", { value: "", textContent: "All sessions" }),
+    ...shown.map(([label, list]) => el("optgroup", { label }, ...list.map(option))),
+  );
+  const keep = shown.some(([, list]) => list.some((a) => a.id === selectedId)) ? selectedId : null;
+  agentSelect.value = keep ?? "";
+  if (keep !== selectedId || !unsubscribeTimeline) selectAgent(keep);
+}
+
+function overview() {
+  const row = (a: PaseoAgent) => {
+    const btn = el("button", { className: "session-row" }, el("b", { textContent: a.title ?? a.id.slice(0, 8) }), el("span", { textContent: [whereOf(a), a.status].filter(Boolean).join(" · ") }));
+    btn.onclick = () => ((agentSelect.value = a.id), selectAgent(a.id));
+    return btn;
+  };
+  const nodes = groups().flatMap(([label, list]) => (list.length ? [el("h4", { textContent: label }), ...list.map(row)] : []));
+  return nodes.length ? el("div", { className: "overview" }, ...nodes) : el("div", { className: "empty", textContent: "No Paseo sessions yet." });
 }
 
 function selectAgent(id: string | null) {
@@ -140,10 +207,13 @@ function selectAgent(id: string | null) {
   timeline.replaceChildren();
   openInPaseo.hidden = !id;
   if (!id) {
-    setStatus(pr ? `PR #${pr.number}` : `Not on a Graphite PR (${tabUrl ?? "tab URL not readable"})`);
-    if (pr && !isCreating()) {
-      timeline.append(el("div", { className: "empty", textContent: "No Paseo sessions on this PR yet. Start one with ＋ New." }));
-    }
+    setStatus(viewName());
+    if (isCreating()) return;
+    timeline.append(
+      pr || ticket
+        ? el("div", { className: "empty", textContent: `No Paseo sessions on this ${pr ? "PR" : "ticket"} yet. Start one with ＋ New.` })
+        : overview(),
+    );
     return;
   }
   const serverId = daemon.getLastServerInfoMessage()?.serverId;
@@ -437,21 +507,41 @@ async function openNewForm() {
   newBtn.textContent = "Cancel";
   prompt.placeholder = "First message for the new session";
   selectAgent(null);
-  if (pr && !prompt.value.trim()) {
-    prompt.value = prPrefill = `PR #${pr.number}: https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}\n\n`;
+  const text = pr ? `PR #${pr.number}: https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}\n\n` : ticket ? await ticketPrefill(ticket) : "";
+  if (text && isCreating() && !prompt.value.trim()) {
+    prompt.value = prefill = text;
     prompt.focus();
     prompt.setSelectionRange(prompt.value.length, prompt.value.length);
   }
 
-  const prWs = workspaces.filter(isPrWorkspace);
-  const others = workspaces.filter((w) => !isPrWorkspace(w));
   const option = (w: Workspace) => el("option", { value: w.id, textContent: `${w.title ?? w.name} (${w.worktreeSlug ?? w.workspaceDirectory})` });
-  workspaceSelect.replaceChildren(
-    ...(prWs.length ? [el("optgroup", { label: `On PR #${pr?.number}` }, ...prWs.map(option))] : []),
-    el("option", { value: NEW_WORKTREE, textContent: `New worktree checked out to PR #${pr?.number}` }),
-    el("optgroup", { label: "Other workspaces" }, ...others.map(option)),
-  );
-  workspaceSelect.value = prWs[0]?.id ?? NEW_WORKTREE;
+  const roots = recentRoots();
+  const byProject = (list: Workspace[]) =>
+    roots.map((r) => list.filter((w) => w.projectRootPath === r)).filter((g) => g.length).map((g) => el("optgroup", { label: g[0].projectDisplayName }, ...g.map(option)));
+  if (pr) {
+    const prWs = workspaces.filter(isPrWorkspace);
+    const others = workspaces.filter((w) => !isPrWorkspace(w));
+    workspaceSelect.replaceChildren(
+      ...(prWs.length ? [el("optgroup", { label: `On PR #${pr.number}` }, ...prWs.map(option))] : []),
+      el("option", { value: NEW_WORKTREE, textContent: `New worktree checked out to PR #${pr.number}` }),
+      el("optgroup", { label: "Other workspaces" }, ...others.map(option)),
+    );
+    workspaceSelect.value = prWs[0]?.id ?? NEW_WORKTREE;
+  } else if (ticket) {
+    const id = ticket.id;
+    const onTicket = workspaces.filter((w) => isTicketWorkspace(w, id));
+    const name = (root: string) => workspaces.find((w) => w.projectRootPath === root)?.projectDisplayName ?? root;
+    workspaceSelect.replaceChildren(
+      ...(onTicket.length ? [el("optgroup", { label: `On ${id}` }, ...onTicket.map(option))] : []),
+      ...roots.map((r) => el("option", { value: NEW_WORKTREE + r, textContent: `New worktree for ${id} in ${name(r)} (${ticketBranch(ticket!)})` })),
+      ...byProject(workspaces.filter((w) => !onTicket.includes(w))),
+    );
+    workspaceSelect.value = onTicket[0]?.id ?? NEW_WORKTREE + (roots[0] ?? "");
+  } else {
+    workspaceSelect.replaceChildren(...byProject(workspaces));
+    const ids = new Set(workspaces.map((w) => w.id));
+    workspaceSelect.value = byRecency(everyone).find((a) => a.workspaceId && ids.has(a.workspaceId))?.workspaceId ?? workspaces[0]?.id ?? "";
+  }
 
   const snapshot = await paseo.providers.snapshot();
   const models = snapshot.entries
@@ -482,23 +572,37 @@ async function openNewForm() {
   fillModes();
 }
 
+const byRecency = (list: PaseoAgent[]) => [...list].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
+// Project roots, most recently used first.
+function recentRoots() {
+  const rootOf = new Map(workspaces.map((w) => [w.id, w.projectRootPath]));
+  const roots = [...byRecency(everyone).map((a) => rootOf.get(a.workspaceId ?? "")), ...workspaces.map((w) => w.projectRootPath)];
+  return [...new Set(roots.filter((r): r is string => !!r))];
+}
+
+async function ticketPrefill(t: Ticket) {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const title = t.title || (parseTicket(tab?.url)?.id === t.id ? ticketTitle(tab?.title, t.id) : "");
+  return `Work on ${t.id}${title ? `: ${title}` : ""}\n${t.url}\n\n`;
+}
+
 function closeNewForm() {
   document.body.classList.remove("creating");
   newBtn.textContent = "＋ New";
   prompt.placeholder = "Message this session (⇧↩ for a new line)";
-  if (prPrefill && prompt.value === prPrefill) prompt.value = "";
-  prPrefill = "";
+  if (prefill && prompt.value === prefill) prompt.value = "";
+  prefill = "";
 }
 
 async function createSession(text: string, imgs: typeof images) {
-  if (!pr) throw new Error("Open a Graphite PR first");
   const config = {
     provider: modelSelect.value,
     ...(effortSelect.value ? { thinkingOptionId: effortSelect.value } : {}),
     ...(modeSelect.value && !modeSelect.hidden ? { modeId: modeSelect.value } : {}),
   };
   let workspace;
-  if (workspaceSelect.value === NEW_WORKTREE) {
+  if (pr && workspaceSelect.value === NEW_WORKTREE) {
     const target = pr;
     const repoRoot = workspaces.find((w) => isRepo(w, target))?.projectRootPath;
     if (!repoRoot) throw new Error(`No Paseo project for ${pr.owner}/${pr.repo}`);
@@ -507,12 +611,21 @@ async function createSession(text: string, imgs: typeof images) {
     workspace = await paseo.workspaces.create({
       source: { kind: "worktree", cwd: repoRoot, action: "checkout", checkoutSource: { kind: "change_request", forge: "github", number: pr.number } },
     });
+  } else if (ticket && workspaceSelect.value.startsWith(NEW_WORKTREE)) {
+    const branchName = ticketBranch(ticket);
+    setStatus("Creating worktree…");
+    timeline.replaceChildren(el("div", { className: "empty", textContent: `Creating a worktree on ${branchName}. This takes a few seconds.` }));
+    // Branches off the default branch. If the branch already exists, Paseo branches off it under a new name instead.
+    workspace = await paseo.workspaces.create({
+      source: { kind: "worktree", cwd: workspaceSelect.value.slice(NEW_WORKTREE.length), action: "branch-off", branchName },
+    });
   } else {
     workspace = paseo.workspaces.ref(workspaceSelect.value);
   }
   setStatus("Starting session…");
   // Tag it now: a new worktree isn't linked to the PR until Paseo resolves its branch, and another workspace never is.
-  const labels = { [prLabel(pr)]: new Date().toISOString().slice(0, 10) };
+  const label = pr ? prLabel(pr) : ticket ? ticketLabel(ticket.id) : null;
+  const labels = label ? { [label]: new Date().toISOString().slice(0, 10) } : {};
   const agent = await workspace.agents.create({ config, prompt: text, labels, ...(imgs.length ? { images: imgs } : {}) });
   closeNewForm();
   selectedId = agent.id;
@@ -625,22 +738,32 @@ async function syncActiveTab(force = false) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   // Opening the panel counts as looking at the tab.
   if (tab?.id !== undefined) void chrome.tabs.sendMessage(tab.id, { type: "unmark" }).catch(() => {});
-  tabUrl = tab?.url;
-  const next = parsePr(tabUrl);
-  if (!force && next?.number === pr?.number && next?.repo === pr?.repo) return;
+  if (pinned) return force ? loadSessions() : undefined;
+  const nextPr = parsePr(tab?.url);
+  await switchTo(nextPr, nextPr ? null : parseTicket(tab?.url), force);
+}
+
+async function switchTo(nextPr: Pr | null, nextTicket: Ticket | null, force = false) {
+  const [from, to] = [viewKey(), viewKey(nextPr, nextTicket)];
+  if (!force && from === to) return;
   closeNewForm();
-  // Drafts belong to the PR page they were typed on: park this one, bring back the next page's.
-  const draftKeyFor = (p: Pr | null) => `prdraft:${p ? prLabel(p) : ""}`;
-  const [from, to] = [draftKeyFor(pr), draftKeyFor(next)];
-  pr = next;
+  pr = nextPr;
+  ticket = nextTicket;
+  // Drafts belong to the context they were typed in: park this one, bring back the next one's.
   if (from !== to) {
-    void chrome.storage.session.set({ [from]: prompt.value });
-    const saved = (await chrome.storage.session.get(to))[to];
+    void chrome.storage.session.set({ [`ctxdraft:${from}`]: prompt.value });
+    const saved = (await chrome.storage.session.get(`ctxdraft:${to}`))[`ctxdraft:${to}`];
     prompt.value = typeof saved === "string" ? saved : "";
   }
-  newBtn.disabled = !pr;
   await loadSessions();
 }
+
+pinBtn.onclick = () => {
+  pinned = !pinned;
+  pinBtn.setAttribute("aria-pressed", String(pinned));
+  setStatus(lastStatus);
+  if (!pinned && connected()) void syncActiveTab();
+};
 
 timeline.onclick = (e) => {
   const link = e.target instanceof Element ? e.target.closest("a[href]") : null;
@@ -734,7 +857,9 @@ openInPaseo.onclick = (e) => {
   e.preventDefault();
   if (openInPaseo.href.startsWith("paseo:")) void chrome.tabs.update({ url: openInPaseo.href });
 };
-const draftKey = chrome.windows.getCurrent().then((w) => `draft:${w.id}`);
+const windowId = chrome.windows.getCurrent().then((w) => w.id);
+const draftKey = windowId.then((id) => `draft:${id}`);
+const startKey = windowId.then((id) => `start:${id}`);
 async function takeDraft() {
   const key = await draftKey;
   const draft = (await chrome.storage.session.get(key))[key];
@@ -744,8 +869,22 @@ async function takeDraft() {
   prompt.focus();
   prompt.setSelectionRange(prompt.value.length, prompt.value.length);
 }
+// The Linear page's ▶ Paseo button: switch to that ticket, even when pinned elsewhere, and open its new-session form.
+async function takeStart() {
+  const key = await startKey;
+  const start = (await chrome.storage.session.get<Record<string, Partial<Ticket>>>(key))[key];
+  if (!start) return;
+  await chrome.storage.session.remove(key);
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const t = parseTicket(tab?.url);
+  if (!t || t.id !== start.id?.toUpperCase()) return;
+  const title = typeof start.title === "string" ? ticketTitle(start.title, t.id) : undefined;
+  await switchTo(null, { ...t, title, branch: typeof start.branch === "string" ? start.branch : undefined }, true);
+  if (!isCreating()) await openNewForm();
+}
 chrome.storage.session.onChanged.addListener(async (changes) => {
   if (changes[await draftKey]?.newValue) void takeDraft();
+  if (changes[await startKey]?.newValue && connected()) void takeStart();
 });
 void takeDraft();
 settingsBtn.onclick = () => (settingsBox.hidden = !settingsBox.hidden);
@@ -760,9 +899,16 @@ void chrome.storage.sync.get<Record<string, boolean>>(SETTINGS).then((saved) => 
 paseo.agents.subscribe((update) => {
   if (update.kind !== "upsert") return;
   const agent = update.agent;
-  for (const list of [agents, ...stackGroups.map((g) => g.agents)]) {
+  for (const list of [everyone, agents, ...stackGroups.map((g) => g.agents)]) {
     const i = list.findIndex((a) => a.id === agent.id);
     if (i >= 0) list[i] = agent;
+  }
+  // The all-sessions view regroups (and picks up new sessions) instead.
+  if (!pr && !ticket) {
+    if (!agents.some((a) => a.id === agent.id)) agents.push(agent);
+    clearTimeout(allTimer);
+    allTimer = setTimeout(renderPicker, 300);
+    return;
   }
   const option = [...agentSelect.options].find((o) => o.value === agent.id);
   if (option) option.textContent = optionLabel(agent);
@@ -779,7 +925,7 @@ chrome.tabs.onUpdated.addListener((_id, info, tab) => {
 // The browser hides the daemon's 403, so a disallowed origin looks like any other failed connect.
 daemon.subscribeConnectionStatus((s) => {
   if (s.status === "connected") {
-    void syncActiveTab(true);
+    void syncActiveTab(true).then(takeStart);
     // The daemon only sends agent updates once asked; the subscription re-subscribes after reconnects by itself.
     agentsLive ??= paseo.agents.list({ subscribe: {} }).catch(() => (agentsLive = undefined));
   }

@@ -9,6 +9,9 @@ Chrome side panel that lists the Paseo sessions on the Graphite PR you're viewin
 - see how full the session's context window is, as Paseo shows it (amber from 70%, red above 90%; hover for token counts). Only for sessions whose provider reports it, currently Claude;
 - start a new session in an existing workspace or a fresh worktree checked out to the PR, with a model, effort and mode picker; its first message starts with the PR link;
 - see sessions for the other PRs in the same stack;
+- on a Linear issue, see the sessions for that ticket (a workspace on a branch containing its ID, or a `ticket:<ID>` label) and start one in a fresh worktree on a branch named for the ticket, its first message the ticket title and link. The Linear page's **▶ Paseo** button opens that form;
+- anywhere else, see every session grouped into needs you, running and recently finished, and open any of them;
+- pin (📌) the panel to what it's showing, so it stays put while you switch tabs. The composer keeps a draft per PR, ticket or the all-sessions view;
 - hand a review comment or selected diff lines to the session: **→ Paseo** on a comment, or on a selection in the diff, drops them into the composer to edit and send.
 
 A floating button on the PR page shows how many sessions it has, updated live, and opens the panel.
@@ -37,7 +40,7 @@ A session shows up on a PR if either:
 - its Paseo workspace is currently on that PR's branch, or
 - it carries a `pr:<owner>/<repo>#<number>` label.
 
-Sessions started from the panel get the label when they're created.
+Sessions started from the panel get the label when they're created, `ticket:<ID>` for ones started on a Linear issue.
 
 ### Why the plugin
 
