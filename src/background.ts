@@ -153,6 +153,12 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     queueDraft(sender.tab.windowId, msg.text);
     return;
   }
+  // From ext/linear.js; the panel reads the key, opens its new-session form for the ticket, and removes it.
+  if (msg.type === "start-session" && sender.tab && typeof msg.ticket?.id === "string") {
+    void chrome.sidePanel.open({ windowId: sender.tab.windowId });
+    void chrome.storage.session.set({ [`start:${sender.tab.windowId}`]: { ...msg.ticket, at: Date.now() } });
+    return;
+  }
   if (msg.type === "open-panel" && sender.tab) {
     void chrome.sidePanel.open({ windowId: sender.tab.windowId });
     return;

@@ -15,7 +15,8 @@
     "https://*.graphite.com/*",
     "https://graphite.dev/*",
     "https://*.graphite.dev/*",
-    "https://github.com/*"
+    "https://github.com/*",
+    "https://linear.app/*"
   ],
   "background": {
     "service_worker": "background.js",
@@ -60,6 +61,14 @@
         "content.js",
         "review.js"
       ]
+    },
+    {
+      "matches": [
+        "https://linear.app/*"
+      ],
+      "js": [
+        "linear.js"
+      ]
     }
   ],
   "web_accessible_resources": [
@@ -72,7 +81,8 @@
         "https://*.graphite.com/*",
         "https://graphite.dev/*",
         "https://*.graphite.dev/*",
-        "https://github.com/*"
+        "https://github.com/*",
+        "https://linear.app/*"
       ]
     }
   ]

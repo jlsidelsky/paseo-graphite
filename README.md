@@ -13,6 +13,8 @@ Chrome side panel that lists the Paseo sessions on the Graphite or GitHub PR you
 
 A floating button on the PR page shows how many sessions it has, updated live, and opens the panel.
 
+On a Linear issue, **▶ Paseo** next to the issue's copy-link buttons opens the panel's new-session form for that ticket (top right of the window if Linear's toolbar can't be found).
+
 When a session on a PR you have open finishes a turn or needs you, the tab gets a dot on its favicon and title, and Chrome shows a notification that opens the panel on that PR. Both can be turned off under ⚙ in the panel.
 
 ## Setup
