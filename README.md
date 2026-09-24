@@ -4,7 +4,7 @@ Chrome side panel that lists the Paseo sessions on the Graphite PR you're viewin
 
 - send messages, with `/` command and skill suggestions, and paste or drop images into the composer;
 - read tool calls at a glance: shell commands with their output, file edits as diffs, reads and searches with their results, failures in red;
-- answer permission prompts, stop a running turn, and rewind to an earlier message;
+- answer permission prompts, including agent questions (single or multiple choice, or your own answer) and plan approvals with the plan rendered; stop a running turn, and rewind to an earlier message;
 - change a session's permission mode;
 - see how full the session's context window is, as Paseo shows it (amber from 70%, red above 90%; hover for token counts). Only for sessions whose provider reports it, currently Claude;
 - start a new session in an existing workspace or a fresh worktree checked out to the PR, with a model, effort and mode picker; its first message starts with the PR link;

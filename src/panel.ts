@@ -2,6 +2,7 @@ import { createPaseoApi, type PaseoAgent } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import MarkdownIt from "markdown-it";
 import { diffStrings, parseUnifiedDiff, type DiffLine } from "./diff";
+import { isAnswered, parseQuestions, questionResponse, showsText, type Question } from "./question";
 import { agentsOnPr, DAEMON_URL, isPrWorkspace as onPr, isRepo, parsePr, prLabel, sessionsForPr, SETTINGS, stackOf, type Pr, type StackPr, type Workspace } from "./pr";
 
 const NEW_WORKTREE = "__new__";
@@ -54,7 +55,7 @@ let agentsLive: Promise<unknown> | undefined;
 
 const isPrWorkspace = (w: Workspace) => onPr(w, pr);
 
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> = {}, ...children: (Node | string)[]) {
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> = {}, ...children: (Node | string)[]): HTMLElementTagNameMap[K] {
   const node = Object.assign(document.createElement(tag), props);
   node.append(...children);
   return node;
@@ -179,11 +180,14 @@ async function renderTimeline() {
   const busy = agent?.status === "running" || agent?.status === "initializing";
   document.body.classList.toggle("busy", busy);
   const rewindModes: RewindMode[] = busy || !agent ? [] : (["conversation", "files", "both"] as const).filter((m) => agent.capabilities?.[capability[m]]);
+  const focused = document.activeElement;
   timeline.replaceChildren(
     ...page.entries.map((e) => renderEntry(e, id, rewindModes)).filter((n): n is HTMLElement => !!n),
-    ...permissions.map((p) => permissionCard(id, p)),
+    ...permissionCards(id, permissions),
     ...(busy && !blocked ? [working("Working")] : []),
   );
+  // Moving a reused card out and back in drops focus; give it back so typing an answer isn't interrupted.
+  if (focused instanceof HTMLElement && focused !== document.activeElement && timeline.contains(focused)) focused.focus({ preventScroll: true });
   if (pinned) timeline.scrollTop = timeline.scrollHeight;
   // Don't rebuild the picker under the user's cursor.
   if (agent && document.activeElement !== sessionMode) {
@@ -215,50 +219,108 @@ async function rewindTo(agentId: string, messageId: string, mode: RewindMode, te
   void renderTimeline();
 }
 
+// One card per pending request, reused across re-renders so half-filled answers and in-flight buttons survive.
+const cards = new Map<string, HTMLElement>();
+
+function permissionCards(agentId: string, permissions: Permission[]) {
+  for (const id of cards.keys()) if (!permissions.some((p) => p.id === id)) cards.delete(id);
+  return permissions.map((p) => {
+    let card = cards.get(p.id);
+    if (!card) cards.set(p.id, (card = permissionCard(agentId, p)));
+    return card;
+  });
+}
+
+type PermissionResponse = Parameters<typeof daemon.respondToPermission>[2];
+
 function permissionCard(agentId: string, p: Permission) {
-  const detail = p.detail && "command" in p.detail ? String(p.detail.command) : p.input ? JSON.stringify(p.input, null, 2) : "";
-  const card = el(
-    "div",
-    { className: "permission" },
-    el("b", { textContent: p.title ?? p.name }),
-    ...(p.description ? [el("div", { textContent: p.description })] : []),
-    ...(detail ? [el("pre", { textContent: detail.slice(0, 4000) })] : []),
-  );
-  const respond = async (response: Parameters<typeof daemon.respondToPermission>[2]) => {
-    card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  const card = el("div", { className: "permission" });
+  const respond = async (response: PermissionResponse) => {
+    const controls = card.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button, input");
+    controls.forEach((c) => (c.disabled = true));
     try {
       await daemon.respondToPermission(agentId, p.id, response);
     } catch (err) {
+      controls.forEach((c) => (c.disabled = false));
       setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
     void renderTimeline();
   };
+  const questions = p.kind === "question" ? parseQuestions(p.input) : null;
+  if (questions) return card.append(questionForm(p, questions, respond)), card;
+
+  const plan = p.kind === "plan" ? [p.metadata?.planText, p.input?.plan].find((t) => typeof t === "string") : undefined;
+  const detail = p.detail && "command" in p.detail ? String(p.detail.command) : p.input ? JSON.stringify(p.input, null, 2) : "";
+  card.append(
+    el("b", { textContent: p.kind === "plan" ? "Plan" : (p.title ?? p.name) }),
+    ...(p.description ? [el("div", { textContent: p.description })] : []),
+    ...(plan ? [markdown(plan)] : detail ? [el("pre", { textContent: detail.slice(0, 4000) })] : []),
+  );
   const row = el("div", { className: "row" });
-  // ponytail: questions need typed answers; send those to Paseo rather than rebuilding its question form.
+  // A question Paseo can't parse gets no form in Paseo either; hand it over.
   if (p.kind === "question") {
     const open = el("button", { textContent: "Answer in Paseo" });
     open.onclick = () => openInPaseo.click();
     row.append(open);
   } else {
+    // Paseo's defaults when a request brings no actions of its own.
     const actions = p.actions?.length
       ? p.actions
       : [
-          { id: "", label: "Allow", behavior: "allow" as const, variant: "primary" as const },
-          { id: "", label: "Deny", behavior: "deny" as const, variant: "danger" as const },
+          { id: "accept", label: p.kind === "plan" ? "Implement" : "Allow", behavior: "allow" as const, variant: "primary" as const },
+          { id: "reject", label: "Deny", behavior: "deny" as const, variant: "danger" as const },
         ];
     for (const a of actions) {
       const btn = el("button", { textContent: a.label, className: a.variant ?? "" });
       btn.onclick = () =>
         void respond(
           a.behavior === "allow"
-            ? { behavior: "allow", ...(a.id ? { selectedActionId: a.id } : {}) }
-            : { behavior: "deny", ...(a.id ? { selectedActionId: a.id } : {}), message: "Denied from the Graphite panel" },
+            ? { behavior: "allow", selectedActionId: a.id }
+            : { behavior: "deny", selectedActionId: a.id, message: "Denied from the Graphite panel" },
         );
       row.append(btn);
     }
   }
   card.append(row);
   return card;
+}
+
+// The form's DOM is the draft: the card is reused across re-renders, so reading it back is enough.
+function questionForm(p: Permission, questions: Question[], respond: (r: PermissionResponse) => Promise<void>) {
+  const form = el("form", { className: "questions" });
+  const submit = el("button", { type: "submit", className: "primary", textContent: "Submit" });
+  const dismiss = el("button", { type: "button", textContent: questions.find((q) => q.dismissLabel)?.dismissLabel ?? "Dismiss" });
+  const fields = questions.map((q, qi) => {
+    const choices = q.options.map((o) => el("input", { type: q.multiSelect ? "checkbox" : "radio", name: `${p.id}-${qi}`, value: o.label }));
+    const placeholder = q.placeholder ?? (q.options.length ? "Other..." : "Type your answer...");
+    const text = showsText(q) ? el("input", { type: "text", placeholder, ariaLabel: q.options.length ? "Other" : q.question }) : null;
+    // Picking an option clears typed text and vice versa, as in Paseo.
+    for (const c of choices) c.onchange = () => { if (text) text.value = ""; sync(); };
+    if (text) text.oninput = () => { if (text.value) for (const c of choices) c.checked = false; sync(); };
+    form.append(
+      el(
+        "fieldset",
+        {},
+        el("legend", {}, el("small", { textContent: q.header }), el("span", { textContent: q.question })),
+        ...q.options.map((o, i) =>
+          el("label", {}, choices[i], el("span", {}, o.label, ...(o.description ? [el("small", { textContent: o.description })] : []))),
+        ),
+        ...(text ? [text] : []),
+      ),
+    );
+    return { choices, text };
+  });
+  const draft = () => fields.map((f) => ({ picked: f.choices.filter((c) => c.checked).map((c) => c.value), text: f.text?.value ?? "" }));
+  const answered = () => draft().every((d, i) => isAnswered(questions[i], d));
+  const sync = () => (submit.disabled = !answered());
+  sync();
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    if (answered()) void respond(questionResponse(p.input, questions, draft(), false));
+  };
+  dismiss.onclick = () => void respond(questionResponse(p.input, questions, draft(), true));
+  form.append(el("div", { className: "row" }, dismiss, submit));
+  return form;
 }
 
 function working(label: string) {
