@@ -10,7 +10,9 @@ Chrome side panel that lists the Paseo sessions on the Graphite PR you're viewin
 - see sessions for the other PRs in the same stack;
 - hand a review comment or selected diff lines to the session: **→ Paseo** on a comment, or on a selection in the diff, drops them into the composer to edit and send.
 
-A floating button on the PR page shows how many sessions it has and opens the panel.
+A floating button on the PR page shows how many sessions it has, updated live, and opens the panel.
+
+When a session on a PR you have open finishes a turn or needs you, the tab gets a dot on its favicon and title, and Chrome shows a notification that opens the panel on that PR. Both can be turned off under ⚙ in the panel.
 
 ## Setup
 

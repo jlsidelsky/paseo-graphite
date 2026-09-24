@@ -11,6 +11,10 @@
     select, button, textarea { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; }
     button { cursor: pointer; }
     button:disabled { opacity: .5; cursor: default; }
+    #settings { display: flex; flex-direction: column; gap: 4px; padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--card); font-size: 12px; }
+    #settings[hidden] { display: none; }
+    #settings label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+    #settings input { accent-color: var(--accent); margin: 0; }
     #status { padding: 4px 10px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; }
     #status a { color: var(--accent); }
     #timeline { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
@@ -90,7 +94,12 @@
   <header>
     <select id="agent-select"></select>
     <button id="new-btn" title="New session">＋ New</button>
+    <button id="settings-btn" title="Settings">⚙</button>
   </header>
+  <div id="settings" hidden>
+    <label><input type="checkbox" name="notify" /> Notify when a session finishes or needs you</label>
+    <label><input type="checkbox" name="markTab" /> Mark the tab</label>
+  </div>
   <div id="status"><span id="status-text">Connecting…</span><a id="open-in-paseo" href="#" hidden>Open in Paseo</a></div>
   <div id="timeline"></div>
   <footer>
