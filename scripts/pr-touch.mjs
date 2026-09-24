@@ -12,7 +12,7 @@ const PASEO = process.env.PASEO_CLI || "paseo";
 const CMD = String.raw`(?:^|[;&|(]\s*)`;
 const GH_PR = new RegExp(CMD + String.raw`gh\s+pr\s+(create|diff|review|comment|edit|merge|checkout|ready|close|reopen)\b([^|;&\n]*)`, "gm");
 const GT_SUBMIT = new RegExp(CMD + String.raw`gt\s+(submit|ss)\b`, "m");
-const PR_URL = /https:\/\/(?:github\.com\/([\w.-]+)\/([\w.-]+)\/pull|app\.graphite\.(?:com|dev)\/github\/pr\/([\w.-]+)\/([\w.-]+))\/(\d+)/g;
+const PR_URL = /https:\/\/(?:github\.com\/([\w.-]+)\/([\w.-]+)\/pull|app\.graphite\.(?:com|dev)\/github\/(?:pr\/([\w.-]+)\/([\w.-]+)|([\w.-]+)\/([\w.-]+)\/pull))\/(\d+)/g;
 
 const repoCache = new Map();
 function repoOf(cwd) {
@@ -28,7 +28,7 @@ function repoOf(cwd) {
   return repoCache.get(cwd);
 }
 
-const urlPrs = (text) => [...text.matchAll(PR_URL)].map((m) => `${m[1] ?? m[3]}/${m[2] ?? m[4]}#${m[5]}`);
+const urlPrs = (text) => [...text.matchAll(PR_URL)].map((m) => `${m[1] ?? m[3] ?? m[5]}/${m[2] ?? m[4] ?? m[6]}#${m[7]}`);
 
 export function touchedPrs(command, output, cwd) {
   const prs = new Set();
