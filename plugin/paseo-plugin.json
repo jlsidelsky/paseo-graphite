@@ -1,0 +1,6 @@
+{
+  "id": "paseo-graphite-pr-tags",
+  "requirements": {
+    "paseo": ">=0.9.1"
+  }
+}

@@ -33,6 +33,8 @@
     .tool pre { white-space: pre-wrap; margin: 4px 0 0; max-height: 240px; overflow: auto; }
     .error { color: #d33; }
     #stop-btn { display: none; }
+    #session-mode { flex: 0 1 auto; max-width: 55%; }
+    body.creating #session-mode { display: none; }
     body.busy:not(.creating) #stop-btn { display: inline-block; }
     .user-wrap { align-self: flex-end; display: flex; align-items: center; gap: 4px; max-width: 85%; }
     .user-wrap .user { max-width: none; }
@@ -80,11 +82,11 @@
     <div id="suggest" hidden></div>
     <div id="new-form" class="row" style="flex-direction: column; align-items: stretch;">
       <select id="workspace-select"></select>
-      <div class="row"><select id="model-select"></select><select id="effort-select"></select></div>
+      <div class="row"><select id="model-select"></select><select id="effort-select"></select><select id="mode-select" title="Permission mode"></select></div>
     </div>
     <div id="archived"><span>This session is archived</span><button id="unarchive-btn">Unarchive</button></div>
     <textarea id="prompt" placeholder="Message this session (⇧↩ for a new line)"></textarea>
-    <div id="send-row" class="row" style="justify-content: flex-end;"><button id="stop-btn" title="Interrupt the session">Stop</button><button id="send-btn">Send</button></div>
+    <div id="send-row" class="row" style="justify-content: flex-end;"><select id="session-mode" title="Permission mode" hidden></select><span style="flex: 1"></span><button id="stop-btn" title="Interrupt the session">Stop</button><button id="send-btn">Send</button></div>
   </footer>
   <script type="module" src="panel.js"></script>
 </body>

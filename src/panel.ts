@@ -22,6 +22,8 @@ const newBtn = $<HTMLButtonElement>("new-btn");
 const unarchiveBtn = $<HTMLButtonElement>("unarchive-btn");
 const suggest = $<HTMLDivElement>("suggest");
 const stopBtn = $<HTMLButtonElement>("stop-btn");
+const modeSelect = $<HTMLSelectElement>("mode-select");
+const sessionMode = $<HTMLSelectElement>("session-mode");
 
 const daemon = new DaemonClient({ url: DAEMON_URL, clientId: "paseo-graphite", clientType: "browser" });
 const paseo = createPaseoApi(daemon);
@@ -121,6 +123,7 @@ function selectAgent(id: string | null) {
   unsubscribeTimeline = null;
   selectedId = id;
   rewindMenuFor = null;
+  sessionMode.hidden = true;
   document.body.classList.remove("busy");
   document.body.classList.toggle("archived", !!listed().find((a) => a.id === id)?.archivedAt);
   timeline.replaceChildren();
@@ -160,6 +163,12 @@ async function renderTimeline() {
     ...(busy && !blocked ? [working("Working")] : []),
   );
   if (pinned) timeline.scrollTop = timeline.scrollHeight;
+  // Don't rebuild the picker under the user's cursor.
+  if (agent && document.activeElement !== sessionMode) {
+    sessionMode.replaceChildren(...agent.availableModes.map((m) => el("option", { value: m.id, textContent: m.label, title: m.description ?? "" })));
+    sessionMode.value = agent.currentModeId ?? "";
+    sessionMode.hidden = !agent.availableModes.length;
+  }
   if (agent) {
     const waiting = blocked ? " · waiting on you" : "";
     setStatus(`${agent.status} · ${agent.model ?? agent.provider} · ${agent.thinkingOptionId ?? "default"}${waiting}`);
@@ -309,10 +318,21 @@ async function openNewForm() {
     effortSelect.value = model?.defaultThinkingOptionId ?? opts.find((o) => o.isDefault)?.id ?? opts[0]?.id ?? "";
     effortSelect.hidden = !opts.length;
   };
-  modelSelect.onchange = fillEfforts;
+  // Default to the provider's own default mode (Auto for Claude), or the last one picked here.
+  const fillModes = () => {
+    const provider = snapshot.entries.find((p) => p.provider === modelSelect.value.split("/")[0]);
+    const modes = provider?.modes ?? [];
+    modeSelect.replaceChildren(...modes.map((m) => el("option", { value: m.id, textContent: m.label, title: m.description ?? "" })));
+    const saved = localStorage.getItem(`mode:${provider?.provider}`);
+    modeSelect.value = modes.some((m) => m.id === saved) ? saved! : (provider?.defaultModeId ?? modes[0]?.id ?? "");
+    modeSelect.hidden = !modes.length;
+  };
+  modeSelect.onchange = () => localStorage.setItem(`mode:${modelSelect.value.split("/")[0]}`, modeSelect.value);
+  modelSelect.onchange = () => (fillEfforts(), fillModes());
   const preferred = models.find((m) => m.isDefault && m.key.startsWith("claude/")) ?? models[0];
   if (preferred) modelSelect.value = preferred.key;
   fillEfforts();
+  fillModes();
 }
 
 function closeNewForm() {
@@ -323,7 +343,11 @@ function closeNewForm() {
 
 async function createSession(text: string) {
   if (!pr) throw new Error("Open a Graphite PR first");
-  const config = { provider: modelSelect.value, ...(effortSelect.value ? { thinkingOptionId: effortSelect.value } : {}) };
+  const config = {
+    provider: modelSelect.value,
+    ...(effortSelect.value ? { thinkingOptionId: effortSelect.value } : {}),
+    ...(modeSelect.value && !modeSelect.hidden ? { modeId: modeSelect.value } : {}),
+  };
   let workspace;
   if (workspaceSelect.value === NEW_WORKTREE) {
     const target = pr;
@@ -437,6 +461,16 @@ timeline.onclick = (e) => {
 agentSelect.onchange = () => selectAgent(agentSelect.value || null);
 newBtn.onclick = () => (isCreating() ? (closeNewForm(), void loadSessions()) : void openNewForm());
 sendBtn.onclick = () => void send();
+sessionMode.onchange = async () => {
+  if (!selectedId) return;
+  try {
+    await daemon.setAgentMode(selectedId, sessionMode.value);
+  } catch (err) {
+    setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  sessionMode.blur();
+  void renderTimeline();
+};
 stopBtn.onclick = async () => {
   if (!selectedId) return;
   stopBtn.disabled = true;

@@ -1,6 +1,14 @@
 # Paseo for Graphite
 
-Chrome side panel that lists the Paseo sessions on the Graphite PR you're viewing, shows their chat, sends messages, and starts new sessions (existing workspace or a fresh worktree checked out to the PR) with a model + effort picker. A floating button on the PR page shows how many sessions it has and opens the panel.
+Chrome side panel that lists the Paseo sessions on the Graphite PR you're viewing, shows their chat, and lets you work with them without leaving the PR:
+
+- send messages, with `/` command and skill suggestions;
+- answer permission prompts, stop a running turn, and rewind to an earlier message;
+- change a session's permission mode;
+- start a new session in an existing workspace or a fresh worktree checked out to the PR, with a model, effort and mode picker;
+- see sessions for the other PRs in the same stack.
+
+A floating button on the PR page shows how many sessions it has and opens the panel.
 
 ## Setup
 
@@ -8,12 +16,14 @@ Needs Node, Chrome and the Paseo desktop app, with its daemon on the default `12
 
 1. `npm install && npm run build`
 2. `node scripts/allow-origin.mjs`: adds `chrome-extension://lflfieeldgejaiigfkkmofeekdlgloam` (pinned by `key` in the manifest) to `daemon.cors.allowedOrigins` in `~/.paseo/config.json`. Then **quit and reopen Paseo**; the daemon only reads the allowlist at startup. Until then the panel says it can't reach Paseo.
-3. Recommended: `node scripts/install-hook.mjs`. It registers a Claude Code hook in `~/.claude/settings.json` that records which PRs each session works on. Without it, the extension misses some sessions; see [Why the hook](#why-the-hook). It's safe to run again. New Claude sessions pick it up.
-4. Optional: `node scripts/pr-touch.mjs --backfill --dry-run` lists which of your existing sessions touched which PRs, from your Claude Code transcripts. Drop `--dry-run` to tag them. The hook only sees commands run after it's installed, so this is how existing sessions get linked.
-5. `chrome://extensions` → Developer mode → Load unpacked → `ext/`
-6. On a Graphite PR, click the toolbar icon (or ⌘⇧P) or the floating button.
+3. Recommended: install the PR-tagging plugin, which records which PRs each session works on. Without it, the extension misses some sessions; see [Why the plugin](#why-the-plugin).
+   1. Turn on plugins in Paseo under **Settings → Plugins** (or set `"pluginsEnabled": true` in `~/.paseo/config.json` and run `paseo reload`). Plugins are trusted, unsandboxed code, so read `plugin/` first.
+   2. `cd plugin && npm install && paseo plugin install "$PWD"`
+   3. `paseo plugin ls` should show `paseo-graphite-pr-tags` as `running`. On first start it tags your past sessions in the background; `paseo plugin logs paseo-graphite-pr-tags` shows what it found.
+4. `chrome://extensions` → Developer mode → Load unpacked → `ext/`
+5. On a Graphite PR, click the toolbar icon (or ⌘⇧P) or the floating button.
 
-`npm run watch` rebuilds on save; click reload on the extension card afterwards.
+`npm run watch` rebuilds on save; click reload on the extension card afterwards. After editing the plugin, run `paseo plugin reload paseo-graphite-pr-tags`.
 
 ## How sessions are matched to a PR
 
@@ -22,26 +32,28 @@ A session shows up on a PR if either:
 - its Paseo workspace is currently on that PR's branch, or
 - it carries a `pr:<owner>/<repo>#<number>` label.
 
-### Why the hook
+Sessions started from the panel get the label when they're created.
+
+### Why the plugin
 
 Paseo links a workspace to one PR: the one for the branch it's on right now. That covers the simple case, a session whose workspace is on the PR's branch, but misses sessions like these:
 
-- **Subagents.** A session hands work to a subagent, and the subagent does it in its own separate worktree and opens the PR there. Paseo doesn't track that worktree, so nothing links the PR back to the session.
+- **Subagents.** A session hands work to a subagent, and the subagent does it in its own separate worktree and opens the PR there. Paseo doesn't link that worktree to the session's workspace.
 - **Several PRs from one session.** A session that builds a stack, or ships a follow-up fix, opens PRs on branches other than its own.
 - **Workspaces that moved on.** Once a workspace switches to another branch, its sessions stop matching the PR they worked on before.
 - **Reviews.** A session that reviews someone else's PR is usually on a different branch entirely.
 
-The hook fills those gaps by tagging a session when it actually works on a PR.
+The plugin fills those gaps by tagging a session when it actually works on a PR. It runs inside Paseo, so it works for every provider (Claude, Codex and the rest) and whether or not Chrome is open.
 
 **If you skip it**, the extension still works. The panel, chat and new sessions all behave the same, and a PR still lists the sessions whose workspace is on its branch. The sessions above just won't appear on the PR, and the floating button may show a lower count or not appear at all.
 
-### What the hook counts
+### What the plugin counts
 
-`scripts/pr-touch.mjs` is a Claude Code `PostToolUse` hook on Bash. When a command actually works on a PR, it adds the PR's label to the agent in `PASEO_AGENT_ID`. These commands count:
+After every turn, the plugin reads the session's shell commands, and its subagents' commands, from Paseo's history. A command counts when it actually works on a PR:
 
 - `gh pr create`, `diff`, `review`, `comment`, `edit`, `merge`, `checkout`, `ready`, `close`, `reopen`;
 - `gt submit`, for PRs it created or updated (not `no-op`).
 
-Lookups (`gh pr view/list/checks`) and PR links that only appear in text don't count, so a session that just mentions a PR isn't linked to it. Subagents inherit the parent's `PASEO_AGENT_ID`, so a PR a subagent opens is tagged on the session that started it.
+Lookups (`gh pr view/list/checks`) and PR links that only appear in text don't count, so a session that just mentions a PR isn't linked to it. A subagent's PRs are tagged on the session that started it.
 
-Limits: only Claude Code agents are tagged, not Codex. Paseo can't remove labels, so a wrong tag stays.
+Limits: a session whose worktree was deleted can't load its history, so the first-start scan skips it. Paseo can't remove labels, so a wrong tag stays.
