@@ -1,6 +1,7 @@
 import { createPaseoApi, type PaseoAgent } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import MarkdownIt from "markdown-it";
+import { diffStrings, parseUnifiedDiff, type DiffLine } from "./diff";
 import { agentsOnPr, DAEMON_URL, isPrWorkspace as onPr, isRepo, parsePr, prLabel, sessionsForPr, stackOf, type Pr, type StackPr, type Workspace } from "./pr";
 
 const NEW_WORKTREE = "__new__";
@@ -24,6 +25,7 @@ const suggest = $<HTMLDivElement>("suggest");
 const stopBtn = $<HTMLButtonElement>("stop-btn");
 const modeSelect = $<HTMLSelectElement>("mode-select");
 const sessionMode = $<HTMLSelectElement>("session-mode");
+const attachmentsEl = $<HTMLDivElement>("attachments");
 
 const daemon = new DaemonClient({ url: DAEMON_URL, clientId: "paseo-graphite", clientType: "browser" });
 const paseo = createPaseoApi(daemon);
@@ -43,6 +45,8 @@ let rewindMenuFor: string | null = null;
 let selectedId: string | null = null;
 let unsubscribeTimeline: (() => void) | null = null;
 let refetchTimer: ReturnType<typeof setTimeout> | undefined;
+let images: { data: string; mimeType: string }[] = [];
+let prPrefill = "";
 
 const isPrWorkspace = (w: Workspace) => onPr(w, pr);
 
@@ -273,16 +277,8 @@ function renderEntry({ item }: TimelineEntry, agentId: string, rewindModes: Rewi
       return markdown(item.text);
     case "reasoning":
       return el("details", { className: "reasoning" }, el("summary", { textContent: "Thinking" }), markdown(item.text));
-    case "tool_call": {
-      const detail = JSON.stringify(item.detail, null, 2) ?? "";
-      const summary = item.detail && "command" in item.detail ? String(item.detail.command) : detail;
-      return el(
-        "details",
-        { className: "tool" },
-        el("summary", { textContent: `${item.name} · ${summary.replace(/\s+/g, " ").slice(0, 120)}` }),
-        el("pre", { textContent: detail.slice(0, 4000) }),
-      );
-    }
+    case "tool_call":
+      return toolCall(item);
     case "error":
       return el("div", { className: "msg error", textContent: item.message });
     default:
@@ -290,11 +286,81 @@ function renderEntry({ item }: TimelineEntry, agentId: string, rewindModes: Rewi
   }
 }
 
+type ToolCall = Extract<TimelineEntry["item"], { type: "tool_call" }>;
+
+const clip = (text: string, max = 4000) => (text.length > max ? `${text.slice(0, max)}\n… ${text.length - max} more characters` : text);
+
+function diffView(lines: DiffLine[]) {
+  // ponytail: first 300 lines; a whole-file Write can be thousands.
+  const shown = lines.slice(0, 300).map((l) => el("span", { className: `d${l.sign === "@" ? "h" : l.sign === "+" ? "a" : l.sign === "-" ? "r" : "c"}`, textContent: l.sign === "@" ? l.text : l.sign + l.text }));
+  if (lines.length > 300) shown.push(el("span", { className: "dh", textContent: `… ${lines.length - 300} more lines` }));
+  return el("pre", { className: "diff" }, ...shown);
+}
+
+function errorText(error: unknown) {
+  if (!error) return "";
+  if (typeof error === "string") return error;
+  // Claude reports { content }, Codex { message }.
+  if (typeof error === "object" && "content" in error && typeof error.content === "string") return error.content;
+  if (typeof error === "object" && "message" in error && typeof error.message === "string") return error.message;
+  return JSON.stringify(error);
+}
+
+function toolCall(item: ToolCall) {
+  const d = item.detail;
+  let label = "";
+  let body: HTMLElement[] = [];
+  const text = (t: string | undefined) => (t ? [el("pre", { textContent: clip(t) })] : []);
+  switch (d.type) {
+    case "shell":
+      label = d.command;
+      body = [el("pre", { className: "cmd-line", textContent: `$ ${d.command}` }), ...text(d.output)];
+      break;
+    case "edit":
+      label = d.filePath;
+      body = [diffView(d.unifiedDiff ? parseUnifiedDiff(d.unifiedDiff) : diffStrings(d.oldString ?? "", d.newString ?? ""))];
+      break;
+    case "write":
+      label = d.filePath;
+      body = d.content ? [diffView(diffStrings("", d.content))] : [];
+      break;
+    case "read":
+      label = d.filePath;
+      body = text(d.content);
+      break;
+    case "search":
+      label = d.query;
+      body = text(d.content ?? d.filePaths?.join("\n") ?? d.webResults?.map((r) => `${r.title}\n${r.url}`).join("\n\n"));
+      break;
+    case "fetch":
+      label = d.url;
+      body = text(d.result);
+      break;
+    default:
+      label = JSON.stringify(d) ?? "";
+      body = text(JSON.stringify(d, null, 2));
+  }
+  const error = item.status === "failed" ? errorText(item.error) : "";
+  if (error) body.push(el("pre", { className: "error", textContent: clip(error) }));
+  const mark = item.status === "failed" ? "✕ " : item.status === "canceled" ? "⊘ " : item.status === "running" ? "… " : "";
+  return el(
+    "details",
+    { className: `tool ${item.status}` },
+    el("summary", { textContent: `${mark}${item.name} · ${label.replace(/\s+/g, " ").slice(0, 160)}` }),
+    ...body,
+  );
+}
+
 async function openNewForm() {
   document.body.classList.add("creating");
   newBtn.textContent = "Cancel";
   prompt.placeholder = "First message for the new session";
   selectAgent(null);
+  if (pr && !prompt.value.trim()) {
+    prompt.value = prPrefill = `PR #${pr.number}: https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}\n\n`;
+    prompt.focus();
+    prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+  }
 
   const prWs = workspaces.filter(isPrWorkspace);
   const others = workspaces.filter((w) => !isPrWorkspace(w));
@@ -339,9 +405,11 @@ function closeNewForm() {
   document.body.classList.remove("creating");
   newBtn.textContent = "＋ New";
   prompt.placeholder = "Message this session (⇧↩ for a new line)";
+  if (prPrefill && prompt.value === prPrefill) prompt.value = "";
+  prPrefill = "";
 }
 
-async function createSession(text: string) {
+async function createSession(text: string, imgs: typeof images) {
   if (!pr) throw new Error("Open a Graphite PR first");
   const config = {
     provider: modelSelect.value,
@@ -364,7 +432,7 @@ async function createSession(text: string) {
   setStatus("Starting session…");
   // Tag it now: a new worktree isn't linked to the PR until Paseo resolves its branch, and another workspace never is.
   const labels = { [prLabel(pr)]: new Date().toISOString().slice(0, 10) };
-  const agent = await workspace.agents.create({ config, prompt: text, labels });
+  const agent = await workspace.agents.create({ config, prompt: text, labels, ...(imgs.length ? { images: imgs } : {}) });
   closeNewForm();
   selectedId = agent.id;
   unsubscribeTimeline?.();
@@ -372,19 +440,50 @@ async function createSession(text: string) {
   await loadSessions();
 }
 
+// ponytail: 5 MB of base64 per image is Claude's API cap; the Paseo schema sets none, and other providers may allow more.
+const MAX_IMAGE_BASE64 = 5 * 1024 * 1024;
+
+function addImages(files: ArrayLike<File>) {
+  for (const file of Array.from(files)) {
+    if (!file.type.startsWith("image/")) continue;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const data = String(reader.result).split(",")[1] ?? "";
+      if (data.length > MAX_IMAGE_BASE64) return setStatus(`${file.name || "Image"} is too large (5 MB max)`);
+      images.push({ data, mimeType: file.type });
+      renderImages();
+    };
+    reader.readAsDataURL(file);
+  }
+}
+
+function renderImages() {
+  attachmentsEl.hidden = !images.length;
+  attachmentsEl.replaceChildren(
+    ...images.map((img) => {
+      const remove = el("button", { textContent: "×", title: "Remove image" });
+      remove.onclick = () => ((images = images.filter((i) => i !== img)), renderImages());
+      return el("div", { className: "thumb" }, el("img", { src: `data:${img.mimeType};base64,${img.data}`, alt: "" }), remove);
+    }),
+  );
+}
+
 async function send() {
   const text = prompt.value.trim();
-  if (!text) return;
+  const sent = images;
+  if (!text && !sent.length) return;
   sendBtn.disabled = true;
   try {
-    if (isCreating()) await createSession(text);
+    if (isCreating()) await createSession(text, sent);
     else if (selectedId) {
-      await paseo.agents.ref(selectedId).send(text);
+      await paseo.agents.ref(selectedId).send(text, sent.length ? { images: sent } : undefined);
       timeline.append(el("div", { className: "msg user", textContent: text }), working("Working"));
       document.body.classList.add("busy");
       timeline.scrollTop = timeline.scrollHeight;
     } else return;
     prompt.value = "";
+    images = images.filter((i) => !sent.includes(i));
+    renderImages();
   } catch (err) {
     setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
@@ -526,6 +625,20 @@ prompt.onkeydown = (e) => {
 };
 prompt.oninput = () => void updateSuggestions();
 prompt.onblur = () => closeSuggestions();
+prompt.onpaste = (e) => {
+  const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
+  if (!files.length) return;
+  e.preventDefault();
+  addImages(files);
+};
+prompt.ondragover = (e) => {
+  if (e.dataTransfer?.types.includes("Files")) e.preventDefault();
+};
+prompt.ondrop = (e) => {
+  if (!e.dataTransfer?.files.length) return;
+  e.preventDefault();
+  addImages(e.dataTransfer.files);
+};
 openInPaseo.onclick = (e) => {
   e.preventDefault();
   if (openInPaseo.href.startsWith("paseo:")) void chrome.tabs.update({ url: openInPaseo.href });

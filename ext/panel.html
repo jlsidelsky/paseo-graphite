@@ -32,6 +32,15 @@
     .tool summary, .reasoning summary { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .tool pre { white-space: pre-wrap; margin: 4px 0 0; max-height: 240px; overflow: auto; }
     .error { color: #d33; }
+    .tool > pre { font: 11.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg); background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }
+    .tool > pre.error { color: #d33; }
+    .tool .cmd-line { font-weight: 600; }
+    .tool.failed summary { color: #d33; }
+    .tool.canceled summary { text-decoration: line-through; }
+    .diff span { display: block; }
+    .diff .da { background: color-mix(in srgb, #2da44e 18%, transparent); color: light-dark(#116329, #7ee2a0); }
+    .diff .dr { background: color-mix(in srgb, #cf222e 16%, transparent); color: light-dark(#82071e, #ffa198); }
+    .diff .dh { color: var(--muted); }
     #stop-btn { display: none; }
     #session-mode { flex: 0 1 auto; max-width: 55%; }
     body.creating #session-mode { display: none; }
@@ -60,6 +69,12 @@
     .cmd.active { background: color-mix(in srgb, var(--accent) 18%, transparent); }
     .cmd b { font-weight: 600; white-space: nowrap; }
     .cmd span { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #attachments { display: flex; flex-wrap: wrap; gap: 6px; }
+    #attachments[hidden] { display: none; }
+    .thumb { position: relative; }
+    .thumb img { display: block; width: 52px; height: 52px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); }
+    .thumb button { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0; border-radius: 50%; line-height: 1; font-size: 12px; }
+    body.archived #attachments { display: none; }
     textarea { width: 100%; resize: vertical; min-height: 64px; }
     .row { display: flex; gap: 6px; align-items: center; }
     .row select { flex: 1; min-width: 0; }
@@ -85,6 +100,7 @@
       <div class="row"><select id="model-select"></select><select id="effort-select"></select><select id="mode-select" title="Permission mode"></select></div>
     </div>
     <div id="archived"><span>This session is archived</span><button id="unarchive-btn">Unarchive</button></div>
+    <div id="attachments" hidden></div>
     <textarea id="prompt" placeholder="Message this session (⇧↩ for a new line)"></textarea>
     <div id="send-row" class="row" style="justify-content: flex-end;"><select id="session-mode" title="Permission mode" hidden></select><span style="flex: 1"></span><button id="stop-btn" title="Interrupt the session">Stop</button><button id="send-btn">Send</button></div>
   </footer>
