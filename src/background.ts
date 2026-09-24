@@ -28,7 +28,26 @@ async function prSessions(url: string) {
   return { count: agents.length, running: agents.filter((a) => a.status === "running").length };
 }
 
+// Chained so quick successive sends append instead of overwriting each other.
+let drafting = Promise.resolve();
+
+// ext/review.js text for the panel's composer, per window; the panel takes it on load or on change.
+function queueDraft(windowId: number, text: string) {
+  const key = `draft:${windowId}`;
+  drafting = drafting
+    .then(async () => {
+      const prev = (await chrome.storage.session.get(key))[key];
+      await chrome.storage.session.set({ [key]: typeof prev === "string" && prev ? `${prev}\n\n${text}` : text });
+    })
+    .catch(() => {});
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (msg.type === "to-paseo" && sender.tab && typeof msg.text === "string") {
+    void chrome.sidePanel.open({ windowId: sender.tab.windowId });
+    queueDraft(sender.tab.windowId, msg.text);
+    return;
+  }
   if (msg.type === "open-panel" && sender.tab) {
     void chrome.sidePanel.open({ windowId: sender.tab.windowId });
     return;

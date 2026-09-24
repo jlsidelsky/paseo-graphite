@@ -6,7 +6,8 @@ Chrome side panel that lists the Paseo sessions on the Graphite PR you're viewin
 - answer permission prompts, stop a running turn, and rewind to an earlier message;
 - change a session's permission mode;
 - start a new session in an existing workspace or a fresh worktree checked out to the PR, with a model, effort and mode picker;
-- see sessions for the other PRs in the same stack.
+- see sessions for the other PRs in the same stack;
+- hand a review comment or selected diff lines to the session: **→ Paseo** on a comment, or on a selection in the diff, drops them into the composer to edit and send.
 
 A floating button on the PR page shows how many sessions it has and opens the panel.
 

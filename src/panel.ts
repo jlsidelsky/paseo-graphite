@@ -530,6 +530,21 @@ openInPaseo.onclick = (e) => {
   e.preventDefault();
   if (openInPaseo.href.startsWith("paseo:")) void chrome.tabs.update({ url: openInPaseo.href });
 };
+const draftKey = chrome.windows.getCurrent().then((w) => `draft:${w.id}`);
+async function takeDraft() {
+  const key = await draftKey;
+  const draft = (await chrome.storage.session.get(key))[key];
+  if (typeof draft !== "string" || !draft) return;
+  await chrome.storage.session.remove(key);
+  prompt.value = prompt.value.trim() ? `${prompt.value.trimEnd()}\n\n${draft}` : draft;
+  prompt.focus();
+  prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+}
+chrome.storage.session.onChanged.addListener(async (changes) => {
+  if (changes[await draftKey]?.newValue) void takeDraft();
+});
+void takeDraft();
+
 const connected = () => daemon.getConnectionState().status === "connected";
 chrome.tabs.onActivated.addListener(() => {
   if (connected()) void syncActiveTab();
