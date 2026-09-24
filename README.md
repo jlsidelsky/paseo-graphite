@@ -8,7 +8,9 @@ Chrome side panel that lists the Paseo sessions on the Graphite PR you're viewin
 - start a new session in an existing workspace or a fresh worktree checked out to the PR, with a model, effort and mode picker;
 - see sessions for the other PRs in the same stack.
 
-A floating button on the PR page shows how many sessions it has and opens the panel.
+A floating button on the PR page shows how many sessions it has, updated live, and opens the panel.
+
+When a session on a PR you have open finishes a turn or needs you, the tab gets a dot on its favicon and title, and Chrome shows a notification that opens the panel on that PR. Both can be turned off under ⚙ in the panel.
 
 ## Setup
 

@@ -1,7 +1,7 @@
 import { createPaseoApi, type PaseoAgent } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import MarkdownIt from "markdown-it";
-import { agentsOnPr, DAEMON_URL, isPrWorkspace as onPr, isRepo, parsePr, prLabel, sessionsForPr, stackOf, type Pr, type StackPr, type Workspace } from "./pr";
+import { agentsOnPr, DAEMON_URL, isPrWorkspace as onPr, isRepo, parsePr, prLabel, sessionsForPr, SETTINGS, stackOf, type Pr, type StackPr, type Workspace } from "./pr";
 
 const NEW_WORKTREE = "__new__";
 
@@ -24,6 +24,8 @@ const suggest = $<HTMLDivElement>("suggest");
 const stopBtn = $<HTMLButtonElement>("stop-btn");
 const modeSelect = $<HTMLSelectElement>("mode-select");
 const sessionMode = $<HTMLSelectElement>("session-mode");
+const settingsBtn = $<HTMLButtonElement>("settings-btn");
+const settingsBox = $<HTMLDivElement>("settings");
 
 const daemon = new DaemonClient({ url: DAEMON_URL, clientId: "paseo-graphite", clientType: "browser" });
 const paseo = createPaseoApi(daemon);
@@ -43,6 +45,7 @@ let rewindMenuFor: string | null = null;
 let selectedId: string | null = null;
 let unsubscribeTimeline: (() => void) | null = null;
 let refetchTimer: ReturnType<typeof setTimeout> | undefined;
+let agentsLive: Promise<unknown> | undefined;
 
 const isPrWorkspace = (w: Workspace) => onPr(w, pr);
 
@@ -100,10 +103,11 @@ async function loadStack(target: Pr, all: PaseoAgent[]) {
 
 const listed = () => [...agents, ...stackGroups.flatMap((g) => g.agents)];
 
+const optionLabel = (a: PaseoAgent) => `${a.status === "running" ? "● " : ""}${a.archivedAt ? "(archived) " : ""}${a.title ?? a.id.slice(0, 8)}`;
+
 function renderPicker() {
   if (!pr) return;
-  const option = (a: PaseoAgent) =>
-    el("option", { value: a.id, textContent: `${a.status === "running" ? "● " : ""}${a.archivedAt ? "(archived) " : ""}${a.title ?? a.id.slice(0, 8)}` });
+  const option = (a: PaseoAgent) => el("option", { value: a.id, textContent: optionLabel(a) });
   const active = agents.filter((a) => !a.archivedAt);
   const archived = agents.filter((a) => a.archivedAt);
   agentSelect.replaceChildren(
@@ -443,6 +447,8 @@ function closeSuggestions() {
 
 async function syncActiveTab(force = false) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  // Opening the panel counts as looking at the tab.
+  if (tab?.id !== undefined) void chrome.tabs.sendMessage(tab.id, { type: "unmark" }).catch(() => {});
   tabUrl = tab?.url;
   const next = parsePr(tabUrl);
   if (!force && next?.number === pr?.number && next?.repo === pr?.repo) return;
@@ -530,6 +536,26 @@ openInPaseo.onclick = (e) => {
   e.preventDefault();
   if (openInPaseo.href.startsWith("paseo:")) void chrome.tabs.update({ url: openInPaseo.href });
 };
+settingsBtn.onclick = () => (settingsBox.hidden = !settingsBox.hidden);
+void chrome.storage.sync.get<Record<string, boolean>>(SETTINGS).then((saved) => {
+  for (const input of settingsBox.querySelectorAll("input")) {
+    input.checked = saved[input.name];
+    input.onchange = () => void chrome.storage.sync.set({ [input.name]: input.checked });
+  }
+});
+
+// Relabel picker options in place so the running dots stay live without touching the selection or timeline.
+paseo.agents.subscribe((update) => {
+  if (update.kind !== "upsert") return;
+  const agent = update.agent;
+  for (const list of [agents, ...stackGroups.map((g) => g.agents)]) {
+    const i = list.findIndex((a) => a.id === agent.id);
+    if (i >= 0) list[i] = agent;
+  }
+  const option = [...agentSelect.options].find((o) => o.value === agent.id);
+  if (option) option.textContent = optionLabel(agent);
+});
+
 const connected = () => daemon.getConnectionState().status === "connected";
 chrome.tabs.onActivated.addListener(() => {
   if (connected()) void syncActiveTab();
@@ -540,7 +566,11 @@ chrome.tabs.onUpdated.addListener((_id, info, tab) => {
 
 // The browser hides the daemon's 403, so a disallowed origin looks like any other failed connect.
 daemon.subscribeConnectionStatus((s) => {
-  if (s.status === "connected") void syncActiveTab(true);
+  if (s.status === "connected") {
+    void syncActiveTab(true);
+    // The daemon only sends agent updates once asked; the subscription re-subscribes after reconnects by itself.
+    agentsLive ??= paseo.agents.list({ subscribe: {} }).catch(() => (agentsLive = undefined));
+  }
   if (s.status === "disconnected")
     setStatus(
       `Can't reach Paseo at ${DAEMON_URL}, retrying. If Paseo is running, allow this extension: node scripts/allow-origin.mjs`,

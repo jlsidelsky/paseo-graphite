@@ -66,3 +66,18 @@ export async function stackOf(daemon: DaemonClient, cwd: string, target: Pr): Pr
   }
   return [...below, self, ...above].map(({ number, title }) => ({ number, title }));
 }
+
+// chrome.storage.sync keys and their defaults.
+export const SETTINGS = { notify: true, markTab: true };
+
+export type Alert = "done" | "needs-you";
+
+type AgentState = Pick<Agent, "status" | "pendingPermissions" | "archivedAt">;
+
+// Only a change alerts: a session seen for the first time (e.g. after the worker restarts) doesn't.
+export function alertFor(prev: AgentState | undefined, next: AgentState): Alert | null {
+  if (!prev || next.archivedAt) return null;
+  if (!prev.pendingPermissions?.length && next.pendingPermissions?.length) return "needs-you";
+  if (prev.status === "running" && next.status !== "running") return "done";
+  return null;
+}
