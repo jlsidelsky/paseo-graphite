@@ -86,7 +86,7 @@ export function parseTicket(url: string | undefined): Ticket | null {
 
 export const ticketLabel = (id: string) => `ticket:${id}`;
 
-// A whole token only: eng-8574 in joshsidelsky/eng-8574-store-the…, not eng-85741.
+// A whole token only: eng-123 in alice/eng-123-fix-login, not eng-1234.
 export const branchHasTicket = (branch: string | null | undefined, id: string) =>
   !!branch && new RegExp(`(^|[^a-z0-9])${id}(?![a-z0-9])`, "i").test(branch);
 
@@ -106,7 +106,7 @@ export function ticketBranch(t: Ticket) {
   return t.branch || (slug ? `${t.id.toLowerCase()}-${slug}` : t.id.toLowerCase());
 }
 
-// Linear titles tabs "ENG-8574 Store the thing – Linear" (the dash varies).
+// Linear titles tabs "ENG-123 Fix login – Linear" (the dash varies).
 export const ticketTitle = (tabTitle: string | undefined, id: string) =>
   (tabTitle ?? "").replace(/\s+[-–—|]\s+Linear$/, "").replace(new RegExp(`^\\s*${id}\\s*[:\\-–—]?\\s*`, "i"), "").trim();
 

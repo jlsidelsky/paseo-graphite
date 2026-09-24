@@ -2,26 +2,26 @@
 import assert from "node:assert/strict";
 import { agentsOnTicket, branchHasTicket, groupAll, parseTicket, ticketBranch, ticketTitle } from "../src/pr.ts";
 
-assert.deepEqual(parseTicket("https://linear.app/granted/issue/eng-8574/store-the-thing?x=1"), {
-  id: "ENG-8574",
-  url: "https://linear.app/granted/issue/eng-8574/store-the-thing",
+assert.deepEqual(parseTicket("https://linear.app/acme/issue/eng-123/store-the-thing?x=1"), {
+  id: "ENG-123",
+  url: "https://linear.app/acme/issue/eng-123/store-the-thing",
 });
-assert.equal(parseTicket("https://linear.app/granted/issue/ENG-12")?.id, "ENG-12");
-assert.equal(parseTicket("https://linear.app/granted/project/foo"), null);
+assert.equal(parseTicket("https://linear.app/acme/issue/ENG-12")?.id, "ENG-12");
+assert.equal(parseTicket("https://linear.app/acme/project/foo"), null);
 assert.equal(parseTicket("https://graphite.com/github/pr/a/b/1"), null);
 
-assert.ok(branchHasTicket("joshsidelsky/eng-8574-store-the-thing", "ENG-8574"));
-assert.ok(branchHasTicket("ENG-8574", "ENG-8574"));
-assert.ok(!branchHasTicket("joshsidelsky/eng-85741-other", "ENG-8574"));
-assert.ok(!branchHasTicket("joshsidelsky/xeng-8574", "ENG-8574"));
-assert.ok(!branchHasTicket(null, "ENG-8574"));
+assert.ok(branchHasTicket("alice/eng-123-store-the-thing", "ENG-123"));
+assert.ok(branchHasTicket("ENG-123", "ENG-123"));
+assert.ok(!branchHasTicket("alice/eng-1231-other", "ENG-123"));
+assert.ok(!branchHasTicket("alice/xeng-123", "ENG-123"));
+assert.ok(!branchHasTicket(null, "ENG-123"));
 
-assert.equal(ticketBranch({ id: "ENG-8574", url: "https://linear.app/g/issue/ENG-8574/store-the-thing" }), "eng-8574-store-the-thing");
-assert.equal(ticketBranch({ id: "ENG-8574", url: "https://linear.app/g/issue/ENG-8574" }), "eng-8574");
-assert.equal(ticketBranch({ id: "ENG-8574", url: "https://linear.app/g/issue/ENG-8574/x", branch: "josh/eng-8574-x" }), "josh/eng-8574-x");
+assert.equal(ticketBranch({ id: "ENG-123", url: "https://linear.app/g/issue/ENG-123/store-the-thing" }), "eng-123-store-the-thing");
+assert.equal(ticketBranch({ id: "ENG-123", url: "https://linear.app/g/issue/ENG-123" }), "eng-123");
+assert.equal(ticketBranch({ id: "ENG-123", url: "https://linear.app/g/issue/ENG-123/x", branch: "josh/eng-123-x" }), "josh/eng-123-x");
 
-assert.equal(ticketTitle("ENG-8574 Store the thing – Linear", "ENG-8574"), "Store the thing");
-assert.equal(ticketTitle("ENG-8574: A - B | Linear", "ENG-8574"), "A - B");
+assert.equal(ticketTitle("ENG-123 Store the thing – Linear", "ENG-123"), "Store the thing");
+assert.equal(ticketTitle("ENG-123: A - B | Linear", "ENG-123"), "A - B");
 assert.equal(ticketTitle(undefined, "ENG-1"), "");
 
 // ponytail: only the fields these helpers read.
@@ -30,10 +30,10 @@ const ws = (id: string, branch: string | null, head?: string) => ({ id, gitRunti
 const agents = [
   agent("onBranch", { workspaceId: "w1" }),
   agent("onPrHead", { workspaceId: "w3" }),
-  agent("labelled", { labels: { "ticket:ENG-8574": "2026-09-24" } }),
-  agent("mentions", { workspaceId: "w2", title: "Fix ENG-8574" }),
+  agent("labelled", { labels: { "ticket:ENG-123": "2026-09-24" } }),
+  agent("mentions", { workspaceId: "w2", title: "Fix ENG-123" }),
 ];
-const found = agentsOnTicket([ws("w1", "josh/eng-8574-a"), ws("w2", "josh/other"), ws("w3", null, "eng-8574-b")], agents, "ENG-8574");
+const found = agentsOnTicket([ws("w1", "josh/eng-123-a"), ws("w2", "josh/other"), ws("w3", null, "eng-123-b")], agents, "ENG-123");
 assert.deepEqual(found.map((a: { id: string }) => a.id).sort(), ["labelled", "onBranch", "onPrHead"]);
 
 const g = groupAll([
