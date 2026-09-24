@@ -27,12 +27,6 @@ export function isPrWorkspace(w: Workspace, target: Pr | null) {
   return !!target && w.githubRuntime?.pullRequest?.number === target.number && isRepo(w, target);
 }
 
-export async function sessionsForPr(paseo: Paseo, target: Pr) {
-  const [ws, ag] = await Promise.all([paseo.workspaces.list(), paseo.agents.list({ filter: { includeArchived: true } })]);
-  const all = ag.entries.map((e) => e.agent);
-  return { workspaces: ws.entries, all, agents: agentsOnPr(ws.entries, all, target) };
-}
-
 export function agentsOnPr(workspaces: Workspace[], agents: Agent[], target: Pr) {
   const prWorkspaceIds = new Set(workspaces.filter((w) => isPrWorkspace(w, target)).map((w) => w.id));
   const label = prLabel(target);
@@ -81,4 +75,50 @@ export function alertFor(prev: AgentState | undefined, next: AgentState): Alert 
   if (!prev.pendingPermissions?.length && next.pendingPermissions?.length) return "needs-you";
   if (prev.status === "running" && next.status !== "running") return "done";
   return null;
+}
+
+export type Ticket = { id: string; url: string; title?: string; branch?: string };
+
+export function parseTicket(url: string | undefined): Ticket | null {
+  const m = url?.match(/^https:\/\/linear\.app\/[^/]+\/issue\/([a-z][a-z0-9]*-\d+)(?:\/[^/?#]*)?/i);
+  return m ? { id: m[1].toUpperCase(), url: m[0] } : null;
+}
+
+export const ticketLabel = (id: string) => `ticket:${id}`;
+
+// A whole token only: eng-8574 in joshsidelsky/eng-8574-store-the…, not eng-85741.
+export const branchHasTicket = (branch: string | null | undefined, id: string) =>
+  !!branch && new RegExp(`(^|[^a-z0-9])${id}(?![a-z0-9])`, "i").test(branch);
+
+export const isTicketWorkspace = (w: Workspace, id: string) =>
+  branchHasTicket(w.gitRuntime?.currentBranch, id) || branchHasTicket(w.githubRuntime?.pullRequest?.headRefName, id);
+
+export function agentsOnTicket(workspaces: Workspace[], agents: Agent[], id: string) {
+  const ids = new Set(workspaces.filter((w) => isTicketWorkspace(w, id)).map((w) => w.id));
+  return agents
+    .filter((a) => (a.workspaceId && ids.has(a.workspaceId)) || ticketLabel(id) in (a.labels ?? {}))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+// The Linear button may send the ticket's own branch name; otherwise <id>-<slug from the URL>.
+export function ticketBranch(t: Ticket) {
+  const slug = t.url.match(/\/issue\/[^/]+\/([^/?#]+)/)?.[1];
+  return t.branch || (slug ? `${t.id.toLowerCase()}-${slug}` : t.id.toLowerCase());
+}
+
+// Linear titles tabs "ENG-8574 Store the thing – Linear" (the dash varies).
+export const ticketTitle = (tabTitle: string | undefined, id: string) =>
+  (tabTitle ?? "").replace(/\s+[-–—|]\s+Linear$/, "").replace(new RegExp(`^\\s*${id}\\s*[:\\-–—]?\\s*`, "i"), "").trim();
+
+export function groupAll(agents: Agent[], finishedCap = 20) {
+  const live = agents.filter((a) => !a.archivedAt).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const needs = live.filter((a) => a.pendingPermissions?.length);
+  const running = live.filter((a) => !needs.includes(a) && (a.status === "running" || a.status === "initializing"));
+  const finished = live.filter((a) => !needs.includes(a) && !running.includes(a)).slice(0, finishedCap);
+  return { needs, running, finished };
+}
+
+export async function listSessions(paseo: Paseo) {
+  const [ws, ag] = await Promise.all([paseo.workspaces.list(), paseo.agents.list({ filter: { includeArchived: true } })]);
+  return { workspaces: ws.entries, all: ag.entries.map((e) => e.agent) };
 }
