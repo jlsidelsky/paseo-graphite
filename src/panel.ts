@@ -107,13 +107,27 @@ async function renderTimeline() {
   const page = await paseo.agents.ref(id).timeline.refetch({ direction: "tail", limit: 200 });
   if (id !== selectedId) return;
   const pinned = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 40;
-  timeline.replaceChildren(...page.entries.map(renderEntry).filter((n): n is HTMLElement => !!n));
-  if (pinned) timeline.scrollTop = timeline.scrollHeight;
   const agent = page.agent;
+  const blocked = !!agent?.pendingPermissions?.length;
+  const busy = agent?.status === "running" || agent?.status === "initializing";
+  timeline.replaceChildren(
+    ...page.entries.map(renderEntry).filter((n): n is HTMLElement => !!n),
+    ...(busy ? [working(blocked ? "Waiting on a permission (Open in Paseo)" : "Working")] : []),
+  );
+  if (pinned) timeline.scrollTop = timeline.scrollHeight;
   if (agent) {
-    const waiting = agent.pendingPermissions?.length ? " · waiting on a permission (open in Paseo)" : "";
+    const waiting = blocked ? " · waiting on a permission (open in Paseo)" : "";
     setStatus(`${agent.status} · ${agent.model ?? agent.provider} · ${agent.thinkingOptionId ?? "default"}${waiting}`);
   }
+  // ponytail: a turn can go quiet (long tool call) without stream events; re-check while busy so the indicator clears.
+  if (busy) {
+    clearTimeout(refetchTimer);
+    refetchTimer = setTimeout(renderTimeline, 4000);
+  }
+}
+
+function working(label: string) {
+  return el("div", { className: "working" }, el("span", { className: "dots" }, el("i"), el("i"), el("i")), label);
 }
 
 function renderEntry({ item }: TimelineEntry): HTMLElement | null {
@@ -214,8 +228,11 @@ async function send() {
   sendBtn.disabled = true;
   try {
     if (isCreating()) await createSession(text);
-    else if (selectedId) await paseo.agents.ref(selectedId).send(text);
-    else return;
+    else if (selectedId) {
+      await paseo.agents.ref(selectedId).send(text);
+      timeline.append(el("div", { className: "msg user", textContent: text }), working("Working"));
+      timeline.scrollTop = timeline.scrollHeight;
+    } else return;
     prompt.value = "";
   } catch (err) {
     setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
