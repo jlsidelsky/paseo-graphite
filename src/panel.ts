@@ -25,6 +25,7 @@ const suggest = $<HTMLDivElement>("suggest");
 const stopBtn = $<HTMLButtonElement>("stop-btn");
 const modeSelect = $<HTMLSelectElement>("mode-select");
 const sessionMode = $<HTMLSelectElement>("session-mode");
+const contextEl = $<HTMLSpanElement>("context");
 const attachmentsEl = $<HTMLDivElement>("attachments");
 const settingsBtn = $<HTMLButtonElement>("settings-btn");
 const settingsBox = $<HTMLDivElement>("settings");
@@ -132,6 +133,7 @@ function selectAgent(id: string | null) {
   selectedId = id;
   rewindMenuFor = null;
   sessionMode.hidden = true;
+  contextEl.hidden = true;
   document.body.classList.remove("busy");
   document.body.classList.toggle("archived", !!listed().find((a) => a.id === id)?.archivedAt);
   timeline.replaceChildren();
@@ -151,6 +153,18 @@ function selectAgent(id: string | null) {
     refetchTimer = setTimeout(renderTimeline, 250);
   });
   void renderTimeline();
+}
+
+// Same math and thresholds as Paseo's own meter; hidden when the provider hasn't reported usage.
+function showContext(u: PaseoAgent["lastUsage"]) {
+  const max = u?.contextWindowMaxTokens, used = u?.contextWindowUsedTokens;
+  const known = max !== undefined && max > 0 && used !== undefined && used >= 0;
+  contextEl.hidden = !known;
+  if (!known) return;
+  const pct = (used / max) * 100;
+  contextEl.textContent = `${Math.round(pct)}% context`;
+  contextEl.className = pct > 90 ? "full" : pct >= 70 ? "high" : "";
+  contextEl.title = `${used.toLocaleString()} / ${max.toLocaleString()} tokens`;
 }
 
 async function renderTimeline() {
@@ -178,6 +192,7 @@ async function renderTimeline() {
     sessionMode.hidden = !agent.availableModes.length;
   }
   if (agent) {
+    showContext(agent.lastUsage);
     const waiting = blocked ? " · waiting on you" : "";
     setStatus(`${agent.status} · ${agent.model ?? agent.provider} · ${agent.thinkingOptionId ?? "default"}${waiting}`);
   }
