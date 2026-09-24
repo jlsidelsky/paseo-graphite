@@ -628,8 +628,16 @@ async function syncActiveTab(force = false) {
   tabUrl = tab?.url;
   const next = parsePr(tabUrl);
   if (!force && next?.number === pr?.number && next?.repo === pr?.repo) return;
-  pr = next;
   closeNewForm();
+  // Drafts belong to the PR page they were typed on: park this one, bring back the next page's.
+  const draftKeyFor = (p: Pr | null) => `prdraft:${p ? prLabel(p) : ""}`;
+  const [from, to] = [draftKeyFor(pr), draftKeyFor(next)];
+  pr = next;
+  if (from !== to) {
+    void chrome.storage.session.set({ [from]: prompt.value });
+    const saved = (await chrome.storage.session.get(to))[to];
+    prompt.value = typeof saved === "string" ? saved : "";
+  }
   newBtn.disabled = !pr;
   await loadSessions();
 }
