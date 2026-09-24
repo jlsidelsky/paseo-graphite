@@ -59,6 +59,18 @@
     .permission .row { justify-content: flex-end; flex-wrap: wrap; }
     .permission button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
     .permission button.danger { color: #d33; }
+    .permission > .md { max-height: 320px; overflow: auto; }
+    .questions { display: flex; flex-direction: column; gap: 10px; }
+    .questions fieldset { border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .questions legend { padding: 0; margin-bottom: 4px; }
+    .questions legend small { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+    .questions legend span { font-weight: 600; }
+    .questions label { display: flex; gap: 8px; align-items: flex-start; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
+    .questions label:hover, .questions label:has(:checked) { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+    .questions label input { accent-color: var(--accent); margin: 3px 0 0; flex: none; }
+    .questions label small { display: block; color: var(--muted); font-size: 12px; }
+    .questions input[type=text] { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; margin-top: 2px; }
+    .questions input[type=text]:focus { outline: none; border-color: var(--accent); }
     .working { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
     .dots { display: inline-flex; gap: 3px; }
     .dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s infinite ease-in-out; }
