@@ -2,10 +2,11 @@
 
 Chrome side panel that lists the Paseo sessions on the Graphite PR you're viewing, shows their chat, and lets you work with them without leaving the PR:
 
-- send messages, with `/` command and skill suggestions;
+- send messages, with `/` command and skill suggestions, and paste or drop images into the composer;
+- read tool calls at a glance: shell commands with their output, file edits as diffs, reads and searches with their results, failures in red;
 - answer permission prompts, stop a running turn, and rewind to an earlier message;
 - change a session's permission mode;
-- start a new session in an existing workspace or a fresh worktree checked out to the PR, with a model, effort and mode picker;
+- start a new session in an existing workspace or a fresh worktree checked out to the PR, with a model, effort and mode picker; its first message starts with the PR link;
 - see sessions for the other PRs in the same stack.
 
 A floating button on the PR page shows how many sessions it has and opens the panel.
