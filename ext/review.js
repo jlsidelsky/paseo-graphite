@@ -5,32 +5,74 @@
   // prefixes (Name_local__hash; the hash changes per deploy, the prefix rarely does).
   const FILE_CARD = '[class*="FileCard_file__"]';
   const FILE_TITLE = '[class*="FileDiffTitle_fileDiffTitle__"]';
-  const DIFF_LINES = '[class*="FileDiffLines_fileDiffLines__"]'; // its children are line rows
   const GUTTER = "[data-gutter-line-number]";
   const GUTTER_MARK = '[class*="line_side_number__"]'; // class includes "added" / "deleted"
   const CODE = '[class*="CodeLineHtml_codeLineHtml__"]';
-  // Comment selectors are guesses: Graphite renders markdown in markdown_markdown__* (known), and a comment's
-  // container class presumably contains "Comment"/"comment".
-  const COMMENT_BODY = '[class*="omment"] [class*="markdown_markdown__"]';
-  const AUTHOR = '[class*="author" i], [class*="username" i], img[alt][class*="avatar" i]';
+  const graphite = {
+    DIFF: FILE_CARD,
+    DIFF_LINES: '[class*="FileDiffLines_fileDiffLines__"]', // its children are line rows
+    // Comment selectors are guesses: Graphite renders markdown in markdown_markdown__* (known), and a comment's
+    // container class presumably contains "Comment"/"comment".
+    COMMENT_BODY: '[class*="omment"] [class*="markdown_markdown__"]',
+    AUTHOR: '[class*="author" i], [class*="username" i], img[alt][class*="avatar" i]',
+    filePath: (node) => node.closest(FILE_CARD)?.querySelector(FILE_TITLE)?.textContent?.trim() || null,
+    // The row's last numbered gutter: the new-file side in split view.
+    lineNo: (row) => [...row.querySelectorAll(GUTTER)].map((g) => g.getAttribute("data-gutter-line-number")).filter(Boolean).pop(),
+    codeLine(row) {
+      const code = row.querySelector(CODE);
+      if (!code) return null;
+      const mark = row.querySelector(GUTTER_MARK)?.className ?? "";
+      return (mark.includes("added") ? "+" : mark.includes("deleted") ? "-" : " ") + code.textContent;
+    },
+  };
   // ---- end Graphite DOM knowledge ----
 
+  // ---- GitHub DOM knowledge: fix selectors here. ----
+  // Checked against public pages: the classic "Files changed" (what logged-out users get) and the React diff on
+  // commit pages, which is the component the new "Files changed" uses. Both put rows in table[data-diff-anchor].
+  // React: tr.diff-line-row > td.diff-text-cell[data-line-anchor="diff-<hash>R12"] > code.diff-text.addition > .diff-text-inner
+  // Classic: tr > td.blob-num[data-line-number] + td.blob-code-addition > .blob-code-inner
+  const GH_CODE = ".diff-text-cell:not(.hunk) .diff-text-inner, .blob-code-inner:not(.blob-code-hunk)";
+  const github = {
+    DIFF: "table[data-diff-anchor]",
+    DIFF_LINES: "table[data-diff-anchor] > tbody",
+    // Classic comments (conversation and inline) are .comment-body.markdown-body; the new view's are assumed to be
+    // .markdown-body too, which also puts a button on the PR description.
+    COMMENT_BODY: ".comment-body, .markdown-body",
+    // Mentions in a comment are user hovercard links too; they carry .user-mention.
+    AUTHOR: 'a.author, a[data-hovercard-type="user"]:not(.user-mention):not(:has(img))',
+    filePath: (node) =>
+      node.closest("[data-tagsearch-path]")?.getAttribute("data-tagsearch-path") ??
+      node.closest('[role="region"]')?.querySelector('table[aria-label^="Diff for: "]')?.getAttribute("aria-label").slice(10) ??
+      null,
+    lineNo: (row) =>
+      [...row.querySelectorAll("[data-line-anchor], [data-line-number]")]
+        .map((g) => (g.getAttribute("data-line-anchor") ?? g.getAttribute("data-line-number")).match(/\d+$/)?.[0])
+        .filter(Boolean)
+        .pop(),
+    // ponytail: split view sends the right-hand (new) side of each row; a row changed on both sides loses the old line.
+    codeLine(row) {
+      const code = [...row.querySelectorAll(GH_CODE)].pop();
+      if (!code) return null;
+      const sign = code.closest(".addition, .blob-code-addition") ? "+" : code.closest(".deletion, .blob-code-deletion") ? "-" : " ";
+      return sign + code.textContent;
+    },
+  };
+  // ---- end GitHub DOM knowledge ----
+
+  const dom = location.hostname === "github.com" ? github : graphite;
   const BTN = "data-paseo-send";
 
   const send = (text) => chrome.runtime.sendMessage({ type: "to-paseo", text }).catch(() => {});
 
-  const filePath = (node) => node.closest(FILE_CARD)?.querySelector(FILE_TITLE)?.textContent?.trim() || null;
-
-  // The row's last numbered gutter: the new-file side in split view.
-  const lineNo = (row) => [...row.querySelectorAll(GUTTER)].map((g) => g.getAttribute("data-gutter-line-number")).filter(Boolean).pop();
-
   const rowOf = (node) => {
-    for (let n = node; n?.parentElement; n = n.parentElement) if (n.parentElement.matches(DIFF_LINES)) return n;
+    for (let n = node; n?.parentElement; n = n.parentElement) if (n.parentElement.matches(dom.DIFF_LINES)) return n;
     return null;
   };
 
-  // Same two URL shapes as parsePr in src/pr.ts.
-  const pr = () => `PR #${location.pathname.match(/\/(?:pr\/[^/]+\/[^/]+|pull)\/(\d+)/)?.[1] ?? "?"}`;
+  // Same URL shapes as parsePr in src/pr.ts. Also gates the buttons: github.com/* includes non-PR pages.
+  const prNumber = () => location.pathname.match(/\/(?:pr\/[^/]+\/[^/]+|pull)\/(\d+)/)?.[1];
+  const pr = () => `PR #${prNumber()}`;
   const where = (path, lines) => {
     const range = !lines.length ? "" : lines[0] === lines.at(-1) ? ` line ${lines[0]}` : ` lines ${lines[0]}–${lines.at(-1)}`;
     return path ? `\`${path}\`${range} (${pr()})` : pr();
@@ -39,31 +81,26 @@
   function commentText(body) {
     let author = null;
     for (let n = body.parentElement, i = 0; n && i < 8 && !author; n = n.parentElement, i++) {
-      const a = n.querySelector(AUTHOR);
+      const a = n.querySelector(dom.AUTHOR);
       author = (a?.alt || a?.textContent)?.trim().replace(/^@/, "") || null;
     }
     // Inline comments sit between diff rows; the nearest numbered row above is the commented line.
     let line = null;
-    for (let r = rowOf(body)?.previousElementSibling; r && !line; r = r.previousElementSibling) line = lineNo(r);
+    for (let r = rowOf(body)?.previousElementSibling; r && !line; r = r.previousElementSibling) line = dom.lineNo(r);
     const quoted = body.innerText.trim().replace(/^/gm, "> ");
-    return `Review comment on ${where(filePath(body), line ? [line] : [])}${author ? ` by @${author}` : ""}:\n${quoted}\n\n${location.href}`;
+    return `Review comment on ${where(dom.filePath(body), line ? [line] : [])}${author ? ` by @${author}` : ""}:\n${quoted}\n\n${location.href}`;
   }
 
   function selectionText(sel) {
     const range = sel.getRangeAt(0);
     const start = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
-    const rows = [...(start?.closest(DIFF_LINES)?.children ?? [])].filter((r) => range.intersectsNode(r) && r.querySelector(CODE));
-    const lines = rows.map(lineNo).filter(Boolean);
-    const code = rows.length
-      ? rows
-          .map((r) => {
-            const mark = r.querySelector(GUTTER_MARK)?.className ?? "";
-            return (mark.includes("added") ? "+" : mark.includes("deleted") ? "-" : " ") + r.querySelector(CODE).textContent;
-          })
-          .join("\n")
-      : sel.toString();
+    const rows = [...(start?.closest(dom.DIFF_LINES)?.children ?? [])].filter(
+      (r) => range.intersectsNode(r) && dom.codeLine(r) !== null,
+    );
+    const lines = rows.map(dom.lineNo).filter(Boolean);
+    const code = rows.length ? rows.map(dom.codeLine).join("\n") : sel.toString();
     // ponytail: whole rows, not the exact selected characters; a hand-off to an agent wants the full lines.
-    return `Lines from ${where(start && filePath(start), lines)}:\n\`\`\`${rows.length ? "diff" : ""}\n${code}\n\`\`\`\n\n${location.href}`;
+    return `Lines from ${where(start && dom.filePath(start), lines)}:\n\`\`\`${rows.length ? "diff" : ""}\n${code}\n\`\`\`\n\n${location.href}`;
   }
 
   function button(label, style) {
@@ -79,7 +116,8 @@
   }
 
   function scan() {
-    for (const body of document.querySelectorAll(COMMENT_BODY)) {
+    if (!prNumber()) return;
+    for (const body of document.querySelectorAll(dom.COMMENT_BODY)) {
       if (body.nextElementSibling?.hasAttribute(BTN)) continue;
       const b = button(
         "Send this comment to Paseo",
@@ -104,7 +142,7 @@
     const el = node instanceof Element ? node : node?.parentElement;
     floating?.remove();
     floating = null;
-    if (!el?.closest(`${FILE_CARD}, ${DIFF_LINES}`)) return;
+    if (!prNumber() || !el?.closest(`${dom.DIFF}, ${dom.DIFF_LINES}`)) return;
     const text = selectionText(sel);
     const rect = sel.getRangeAt(0).getBoundingClientRect();
     floating = button(

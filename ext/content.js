@@ -71,7 +71,7 @@ async function mark() {
   else document.head.append((state.added = Object.assign(document.createElement("link"), { rel: "icon", href: icon })));
 }
 
-// Graphite may have replaced the title or icons since; leave its newer ones alone.
+// The page may have replaced the title or icons since; leave its newer ones alone.
 function unmark() {
   const state = marked;
   if (!state) return;
@@ -98,7 +98,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && unmark());
 window.addEventListener("focus", unmark);
 
-// ponytail: Graphite is an SPA, so poll for URL changes; the Navigation API's navigate event could replace this.
+// ponytail: Graphite and GitHub are SPAs, so poll for URL changes; the Navigation API's navigate event could replace this.
 setInterval(() => {
   if (location.href !== lastUrl) {
     lastUrl = location.href;

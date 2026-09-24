@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Paseo for Graphite",
   "version": "0.1.0",
-  "description": "Chat with the Paseo sessions behind a Graphite PR.",
+  "description": "Chat with the Paseo sessions behind a Graphite or GitHub PR.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3/80sKQczlHv8IH++wQdJhNV0LOMOYGn35TF/kIW/JdKU5IM/Z7EdEkKsB+477VfFg/PieqIgGE7ltIBL3mrZ8T3srCIMB1crkn4yHBom5DKwH/QCVaN4xvYl+ZB8m4gMX3TjZccWiBEPbfzA+1JHbfUtm8GNlg4TS8K8aXPwMseOVQq3aLAdZqPgU6h6v3ZDcjcWzntOmf9KIGvAF1vHm3Cn+3x0g8OLWmcwufdhLHqJ/vxlXAsUJF/yr8kgkaTYR7GQQ4KWpDtRs6PmnoG12XbWOnW+HI43nIjbmv5zJp9eQeYOcyUIftm+/qaANRbOIIHiZNZKyjOKbCpEF9iMQIDAQAB",
   "permissions": [
     "sidePanel",
@@ -14,7 +14,8 @@
     "https://graphite.com/*",
     "https://*.graphite.com/*",
     "https://graphite.dev/*",
-    "https://*.graphite.dev/*"
+    "https://*.graphite.dev/*",
+    "https://github.com/*"
   ],
   "background": {
     "service_worker": "background.js",
@@ -52,7 +53,8 @@
         "https://graphite.com/*",
         "https://*.graphite.com/*",
         "https://graphite.dev/*",
-        "https://*.graphite.dev/*"
+        "https://*.graphite.dev/*",
+        "https://github.com/*"
       ],
       "js": [
         "content.js",
@@ -69,7 +71,8 @@
         "https://graphite.com/*",
         "https://*.graphite.com/*",
         "https://graphite.dev/*",
-        "https://*.graphite.dev/*"
+        "https://*.graphite.dev/*",
+        "https://github.com/*"
       ]
     }
   ]

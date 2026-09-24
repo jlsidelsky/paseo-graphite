@@ -8,10 +8,11 @@ export type Pr = { owner: string; repo: string; number: number };
 export const DAEMON_URL = "ws://127.0.0.1:6767/ws";
 
 export function parsePr(url: string | undefined): Pr | null {
-  // Graphite uses both /github/pr/<owner>/<repo>/<n> and /github/<owner>/<repo>/pull/<n>.
+  // Graphite uses both /github/pr/<owner>/<repo>/<n> and /github/<owner>/<repo>/pull/<n>; GitHub is /<owner>/<repo>/pull/<n>.
   const m =
     url?.match(/^https:\/\/(?:[\w-]+\.)*graphite\.(?:com|dev)\/github\/pr\/([^/]+)\/([^/]+)\/(\d+)/) ??
-    url?.match(/^https:\/\/(?:[\w-]+\.)*graphite\.(?:com|dev)\/github\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+    url?.match(/^https:\/\/(?:[\w-]+\.)*graphite\.(?:com|dev)\/github\/([^/]+)\/([^/]+)\/pull\/(\d+)/) ??
+    url?.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)(?:[/?#]|$)/);
   return m ? { owner: m[1].toLowerCase(), repo: m[2].toLowerCase(), number: Number(m[3]) } : null;
 }
 

@@ -1,6 +1,6 @@
 # Paseo for Graphite
 
-Chrome side panel that lists the Paseo sessions on the Graphite PR you're viewing, shows their chat, and lets you work with them without leaving the PR:
+Chrome side panel that lists the Paseo sessions on the Graphite or GitHub PR you're viewing, shows their chat, and lets you work with them without leaving the PR:
 
 - send messages, with `/` command and skill suggestions, and paste or drop images into the composer;
 - read tool calls at a glance: shell commands with their output, file edits as diffs, reads and searches with their results, failures in red;
@@ -9,7 +9,7 @@ Chrome side panel that lists the Paseo sessions on the Graphite PR you're viewin
 - see how full the session's context window is, as Paseo shows it (amber from 70%, red above 90%; hover for token counts). Only for sessions whose provider reports it, currently Claude;
 - start a new session in an existing workspace or a fresh worktree checked out to the PR, with a model, effort and mode picker; its first message starts with the PR link;
 - see sessions for the other PRs in the same stack;
-- hand a review comment or selected diff lines to the session: **→ Paseo** on a comment, or on a selection in the diff, drops them into the composer to edit and send.
+- hand a review comment or selected diff lines to the session: **→ Paseo** on a comment, or on a selection in the diff, drops them into the composer to edit and send. On GitHub this works in both the classic and the new "Files changed" view.
 
 A floating button on the PR page shows how many sessions it has, updated live, and opens the panel.
 
@@ -26,7 +26,7 @@ Needs Node, Chrome and the Paseo desktop app, with its daemon on the default `12
    2. `cd plugin && npm install && paseo plugin install "$PWD"`
    3. `paseo plugin ls` should show `paseo-graphite-pr-tags` as `running`. On first start it tags your past sessions in the background; `paseo plugin logs paseo-graphite-pr-tags` shows what it found.
 4. `chrome://extensions` → Developer mode → Load unpacked → `ext/`
-5. On a Graphite PR, click the toolbar icon (or ⌘⇧P) or the floating button.
+5. On a Graphite or GitHub PR, click the toolbar icon (or ⌘⇧P) or the floating button.
 
 `npm run watch` rebuilds on save; click reload on the extension card afterwards. After editing the plugin, run `paseo plugin reload paseo-graphite-pr-tags`.
 
