@@ -25,6 +25,7 @@ const suggest = $<HTMLDivElement>("suggest");
 const stopBtn = $<HTMLButtonElement>("stop-btn");
 const modeSelect = $<HTMLSelectElement>("mode-select");
 const sessionMode = $<HTMLSelectElement>("session-mode");
+const attachmentsEl = $<HTMLDivElement>("attachments");
 
 const daemon = new DaemonClient({ url: DAEMON_URL, clientId: "paseo-graphite", clientType: "browser" });
 const paseo = createPaseoApi(daemon);
@@ -44,6 +45,8 @@ let rewindMenuFor: string | null = null;
 let selectedId: string | null = null;
 let unsubscribeTimeline: (() => void) | null = null;
 let refetchTimer: ReturnType<typeof setTimeout> | undefined;
+let images: { data: string; mimeType: string }[] = [];
+let prPrefill = "";
 
 const isPrWorkspace = (w: Workspace) => onPr(w, pr);
 
@@ -353,6 +356,11 @@ async function openNewForm() {
   newBtn.textContent = "Cancel";
   prompt.placeholder = "First message for the new session";
   selectAgent(null);
+  if (pr && !prompt.value.trim()) {
+    prompt.value = prPrefill = `PR #${pr.number}: https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}\n\n`;
+    prompt.focus();
+    prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+  }
 
   const prWs = workspaces.filter(isPrWorkspace);
   const others = workspaces.filter((w) => !isPrWorkspace(w));
@@ -397,9 +405,11 @@ function closeNewForm() {
   document.body.classList.remove("creating");
   newBtn.textContent = "＋ New";
   prompt.placeholder = "Message this session (⇧↩ for a new line)";
+  if (prPrefill && prompt.value === prPrefill) prompt.value = "";
+  prPrefill = "";
 }
 
-async function createSession(text: string) {
+async function createSession(text: string, imgs: typeof images) {
   if (!pr) throw new Error("Open a Graphite PR first");
   const config = {
     provider: modelSelect.value,
@@ -422,7 +432,7 @@ async function createSession(text: string) {
   setStatus("Starting session…");
   // Tag it now: a new worktree isn't linked to the PR until Paseo resolves its branch, and another workspace never is.
   const labels = { [prLabel(pr)]: new Date().toISOString().slice(0, 10) };
-  const agent = await workspace.agents.create({ config, prompt: text, labels });
+  const agent = await workspace.agents.create({ config, prompt: text, labels, ...(imgs.length ? { images: imgs } : {}) });
   closeNewForm();
   selectedId = agent.id;
   unsubscribeTimeline?.();
@@ -430,19 +440,50 @@ async function createSession(text: string) {
   await loadSessions();
 }
 
+// ponytail: 5 MB of base64 per image is Claude's API cap; the Paseo schema sets none, and other providers may allow more.
+const MAX_IMAGE_BASE64 = 5 * 1024 * 1024;
+
+function addImages(files: ArrayLike<File>) {
+  for (const file of Array.from(files)) {
+    if (!file.type.startsWith("image/")) continue;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const data = String(reader.result).split(",")[1] ?? "";
+      if (data.length > MAX_IMAGE_BASE64) return setStatus(`${file.name || "Image"} is too large (5 MB max)`);
+      images.push({ data, mimeType: file.type });
+      renderImages();
+    };
+    reader.readAsDataURL(file);
+  }
+}
+
+function renderImages() {
+  attachmentsEl.hidden = !images.length;
+  attachmentsEl.replaceChildren(
+    ...images.map((img) => {
+      const remove = el("button", { textContent: "×", title: "Remove image" });
+      remove.onclick = () => ((images = images.filter((i) => i !== img)), renderImages());
+      return el("div", { className: "thumb" }, el("img", { src: `data:${img.mimeType};base64,${img.data}`, alt: "" }), remove);
+    }),
+  );
+}
+
 async function send() {
   const text = prompt.value.trim();
-  if (!text) return;
+  const sent = images;
+  if (!text && !sent.length) return;
   sendBtn.disabled = true;
   try {
-    if (isCreating()) await createSession(text);
+    if (isCreating()) await createSession(text, sent);
     else if (selectedId) {
-      await paseo.agents.ref(selectedId).send(text);
+      await paseo.agents.ref(selectedId).send(text, sent.length ? { images: sent } : undefined);
       timeline.append(el("div", { className: "msg user", textContent: text }), working("Working"));
       document.body.classList.add("busy");
       timeline.scrollTop = timeline.scrollHeight;
     } else return;
     prompt.value = "";
+    images = images.filter((i) => !sent.includes(i));
+    renderImages();
   } catch (err) {
     setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
@@ -584,6 +625,20 @@ prompt.onkeydown = (e) => {
 };
 prompt.oninput = () => void updateSuggestions();
 prompt.onblur = () => closeSuggestions();
+prompt.onpaste = (e) => {
+  const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
+  if (!files.length) return;
+  e.preventDefault();
+  addImages(files);
+};
+prompt.ondragover = (e) => {
+  if (e.dataTransfer?.types.includes("Files")) e.preventDefault();
+};
+prompt.ondrop = (e) => {
+  if (!e.dataTransfer?.files.length) return;
+  e.preventDefault();
+  addImages(e.dataTransfer.files);
+};
 openInPaseo.onclick = (e) => {
   e.preventDefault();
   if (openInPaseo.href.startsWith("paseo:")) void chrome.tabs.update({ url: openInPaseo.href });
