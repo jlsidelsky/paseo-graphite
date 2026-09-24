@@ -1,0 +1,5 @@
+node_modules
+.secrets
+ext/panel.js
+ext/background.js
+.DS_Store

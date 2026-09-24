@@ -1,0 +1,23 @@
+{
+  "name": "paseo-graphite",
+  "version": "1.0.0",
+  "description": "Chrome side panel for chatting with the Paseo sessions behind a Graphite PR.",
+  "scripts": {
+    "build": "esbuild src/panel.ts src/background.ts --bundle --format=esm --platform=browser --target=chrome120 --conditions=node --minify --outdir=ext",
+    "watch": "npm run build -- --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@getpaseo/client": "^0.9.1",
+    "markdown-it": "^15.0.2"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.3.0",
+    "@types/markdown-it": "^14.2.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  },
+  "private": true,
+  "type": "module",
+  "license": "MIT"
+}

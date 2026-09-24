@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    :root { color-scheme: light dark; --fg: light-dark(#1f1f1f, #e8e8e8); --muted: light-dark(#6b6b6b, #9a9a9a); --bg: light-dark(#f7f7f5, #1c1c1c); --card: light-dark(#fff, #262626); --border: light-dark(#e2e2de, #3a3a3a); --accent: #d97757; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 13px/1.45 -apple-system, system-ui, sans-serif; color: var(--fg); background: var(--bg); height: 100vh; display: flex; flex-direction: column; }
+    header { display: flex; gap: 6px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+    header select { flex: 1; min-width: 0; }
+    select, button, textarea { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; }
+    button { cursor: pointer; }
+    button:disabled { opacity: .5; cursor: default; }
+    #status { padding: 4px 10px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; }
+    #status a { color: var(--accent); }
+    #timeline { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+    .msg { white-space: pre-wrap; word-wrap: break-word; }
+    .md { white-space: normal; }
+    .md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
+    .md p, .md ul, .md ol, .md pre, .md table, .md blockquote { margin: 0 0 8px; }
+    .md ul, .md ol { padding-left: 20px; }
+    .md h1, .md h2, .md h3, .md h4 { font-size: 13px; margin: 12px 0 6px; }
+    .md code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 0 3px; }
+    .md pre { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow-x: auto; }
+    .md pre code { border: 0; padding: 0; background: none; }
+    .md table { border-collapse: collapse; display: block; overflow-x: auto; }
+    .md th, .md td { border: 1px solid var(--border); padding: 3px 6px; text-align: left; }
+    .md blockquote { border-left: 3px solid var(--border); padding-left: 8px; color: var(--muted); }
+    .md a { color: var(--accent); }
+    .user { align-self: flex-end; max-width: 85%; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; }
+    .tool, .reasoning { color: var(--muted); font-size: 12px; }
+    .tool summary, .reasoning summary { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tool pre { white-space: pre-wrap; margin: 4px 0 0; max-height: 240px; overflow: auto; }
+    .error { color: #d33; }
+    .empty { color: var(--muted); margin: auto; text-align: center; padding: 20px; }
+    footer { padding: 10px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
+    textarea { width: 100%; resize: vertical; min-height: 64px; }
+    .row { display: flex; gap: 6px; align-items: center; }
+    .row select { flex: 1; min-width: 0; }
+    #new-form { display: none; }
+    body.creating #new-form { display: flex; }
+    body.creating #agent-select { display: none; }
+    #archived { display: none; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); }
+    body.archived #archived { display: flex; }
+    body.archived #prompt, body.archived #send-row { display: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <select id="agent-select"></select>
+    <button id="new-btn" title="New session">＋ New</button>
+  </header>
+  <div id="status"><span id="status-text">Connecting…</span><a id="open-in-paseo" href="#" hidden>Open in Paseo</a></div>
+  <div id="timeline"></div>
+  <footer>
+    <div id="new-form" class="row" style="flex-direction: column; align-items: stretch;">
+      <select id="workspace-select"></select>
+      <div class="row"><select id="model-select"></select><select id="effort-select"></select></div>
+    </div>
+    <div id="archived"><span>This session is archived</span><button id="unarchive-btn">Unarchive</button></div>
+    <textarea id="prompt" placeholder="Message this session (⇧↩ for a new line)"></textarea>
+    <div id="send-row" class="row" style="justify-content: flex-end;"><button id="send-btn">Send</button></div>
+  </footer>
+  <script type="module" src="panel.js"></script>
+</body>
+</html>
