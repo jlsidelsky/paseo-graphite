@@ -32,6 +32,15 @@
     .tool summary, .reasoning summary { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .tool pre { white-space: pre-wrap; margin: 4px 0 0; max-height: 240px; overflow: auto; }
     .error { color: #d33; }
+    .tool > pre { font: 11.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg); background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }
+    .tool > pre.error { color: #d33; }
+    .tool .cmd-line { font-weight: 600; }
+    .tool.failed summary { color: #d33; }
+    .tool.canceled summary { text-decoration: line-through; }
+    .diff span { display: block; }
+    .diff .da { background: color-mix(in srgb, #2da44e 18%, transparent); color: light-dark(#116329, #7ee2a0); }
+    .diff .dr { background: color-mix(in srgb, #cf222e 16%, transparent); color: light-dark(#82071e, #ffa198); }
+    .diff .dh { color: var(--muted); }
     #stop-btn { display: none; }
     #session-mode { flex: 0 1 auto; max-width: 55%; }
     body.creating #session-mode { display: none; }

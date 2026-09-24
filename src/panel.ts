@@ -1,6 +1,7 @@
 import { createPaseoApi, type PaseoAgent } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import MarkdownIt from "markdown-it";
+import { diffStrings, parseUnifiedDiff, type DiffLine } from "./diff";
 import { agentsOnPr, DAEMON_URL, isPrWorkspace as onPr, isRepo, parsePr, prLabel, sessionsForPr, stackOf, type Pr, type StackPr, type Workspace } from "./pr";
 
 const NEW_WORKTREE = "__new__";
@@ -273,21 +274,78 @@ function renderEntry({ item }: TimelineEntry, agentId: string, rewindModes: Rewi
       return markdown(item.text);
     case "reasoning":
       return el("details", { className: "reasoning" }, el("summary", { textContent: "Thinking" }), markdown(item.text));
-    case "tool_call": {
-      const detail = JSON.stringify(item.detail, null, 2) ?? "";
-      const summary = item.detail && "command" in item.detail ? String(item.detail.command) : detail;
-      return el(
-        "details",
-        { className: "tool" },
-        el("summary", { textContent: `${item.name} · ${summary.replace(/\s+/g, " ").slice(0, 120)}` }),
-        el("pre", { textContent: detail.slice(0, 4000) }),
-      );
-    }
+    case "tool_call":
+      return toolCall(item);
     case "error":
       return el("div", { className: "msg error", textContent: item.message });
     default:
       return null;
   }
+}
+
+type ToolCall = Extract<TimelineEntry["item"], { type: "tool_call" }>;
+
+const clip = (text: string, max = 4000) => (text.length > max ? `${text.slice(0, max)}\n… ${text.length - max} more characters` : text);
+
+function diffView(lines: DiffLine[]) {
+  // ponytail: first 300 lines; a whole-file Write can be thousands.
+  const shown = lines.slice(0, 300).map((l) => el("span", { className: `d${l.sign === "@" ? "h" : l.sign === "+" ? "a" : l.sign === "-" ? "r" : "c"}`, textContent: l.sign === "@" ? l.text : l.sign + l.text }));
+  if (lines.length > 300) shown.push(el("span", { className: "dh", textContent: `… ${lines.length - 300} more lines` }));
+  return el("pre", { className: "diff" }, ...shown);
+}
+
+function errorText(error: unknown) {
+  if (!error) return "";
+  if (typeof error === "string") return error;
+  // Claude reports { content }, Codex { message }.
+  if (typeof error === "object" && "content" in error && typeof error.content === "string") return error.content;
+  if (typeof error === "object" && "message" in error && typeof error.message === "string") return error.message;
+  return JSON.stringify(error);
+}
+
+function toolCall(item: ToolCall) {
+  const d = item.detail;
+  let label = "";
+  let body: HTMLElement[] = [];
+  const text = (t: string | undefined) => (t ? [el("pre", { textContent: clip(t) })] : []);
+  switch (d.type) {
+    case "shell":
+      label = d.command;
+      body = [el("pre", { className: "cmd-line", textContent: `$ ${d.command}` }), ...text(d.output)];
+      break;
+    case "edit":
+      label = d.filePath;
+      body = [diffView(d.unifiedDiff ? parseUnifiedDiff(d.unifiedDiff) : diffStrings(d.oldString ?? "", d.newString ?? ""))];
+      break;
+    case "write":
+      label = d.filePath;
+      body = d.content ? [diffView(diffStrings("", d.content))] : [];
+      break;
+    case "read":
+      label = d.filePath;
+      body = text(d.content);
+      break;
+    case "search":
+      label = d.query;
+      body = text(d.content ?? d.filePaths?.join("\n") ?? d.webResults?.map((r) => `${r.title}\n${r.url}`).join("\n\n"));
+      break;
+    case "fetch":
+      label = d.url;
+      body = text(d.result);
+      break;
+    default:
+      label = JSON.stringify(d) ?? "";
+      body = text(JSON.stringify(d, null, 2));
+  }
+  const error = item.status === "failed" ? errorText(item.error) : "";
+  if (error) body.push(el("pre", { className: "error", textContent: clip(error) }));
+  const mark = item.status === "failed" ? "✕ " : item.status === "canceled" ? "⊘ " : item.status === "running" ? "… " : "";
+  return el(
+    "details",
+    { className: `tool ${item.status}` },
+    el("summary", { textContent: `${mark}${item.name} · ${label.replace(/\s+/g, " ").slice(0, 160)}` }),
+    ...body,
+  );
 }
 
 async function openNewForm() {
