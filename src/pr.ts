@@ -1,4 +1,5 @@
-import type { createPaseoApi } from "@getpaseo/client";
+import type { createPaseoApi, PaseoAgent as Agent } from "@getpaseo/client";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 
 type Paseo = ReturnType<typeof createPaseoApi>;
 export type Workspace = Awaited<ReturnType<Paseo["workspaces"]["list"]>>["entries"][number];
@@ -27,11 +28,41 @@ export function isPrWorkspace(w: Workspace, target: Pr | null) {
 
 export async function sessionsForPr(paseo: Paseo, target: Pr) {
   const [ws, ag] = await Promise.all([paseo.workspaces.list(), paseo.agents.list({ filter: { includeArchived: true } })]);
-  const prWorkspaceIds = new Set(ws.entries.filter((w) => isPrWorkspace(w, target)).map((w) => w.id));
+  const all = ag.entries.map((e) => e.agent);
+  return { workspaces: ws.entries, all, agents: agentsOnPr(ws.entries, all, target) };
+}
+
+export function agentsOnPr(workspaces: Workspace[], agents: Agent[], target: Pr) {
+  const prWorkspaceIds = new Set(workspaces.filter((w) => isPrWorkspace(w, target)).map((w) => w.id));
   const label = prLabel(target);
-  const agents = ag.entries
-    .map((e) => e.agent)
+  return agents
     .filter((a) => (a.workspaceId && prWorkspaceIds.has(a.workspaceId)) || label in (a.labels ?? {}))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  return { workspaces: ws.entries, agents };
+}
+
+export type StackPr = { number: number; title: string };
+
+// Walks GitHub base/head branches: parents down to the trunk, children up to the tips. ~0.5s per search.
+export async function stackOf(daemon: DaemonClient, cwd: string, target: Pr): Promise<StackPr[]> {
+  type Item = { number: number; title: string; state: string; baseRefName?: string; headRefName?: string };
+  const search = async (query: string) =>
+    ((await daemon.searchForge({ cwd, query, limit: 10, kinds: ["pr"] })).items as Item[]).filter((i) => i.state === "OPEN");
+  const self = (await search(String(target.number))).find((i) => i.number === target.number);
+  if (!self?.headRefName) return [];
+  const below: Item[] = [];
+  for (let base = self.baseRefName; base && below.length < 15; ) {
+    const parent = (await search(`head:${base} is:open`)).find((i) => i.headRefName === base);
+    if (!parent) break;
+    below.unshift(parent);
+    base = parent.baseRefName;
+  }
+  const above: Item[] = [];
+  for (const heads = [self.headRefName]; heads.length && above.length < 15; ) {
+    const head = heads.shift()!;
+    for (const child of (await search(`base:${head} is:open`)).filter((i) => i.baseRefName === head)) {
+      above.push(child);
+      if (child.headRefName) heads.push(child.headRefName);
+    }
+  }
+  return [...below, self, ...above].map(({ number, title }) => ({ number, title }));
 }

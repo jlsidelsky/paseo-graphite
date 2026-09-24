@@ -1,7 +1,7 @@
 import { createPaseoApi, type PaseoAgent } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import MarkdownIt from "markdown-it";
-import { DAEMON_URL, isPrWorkspace as onPr, isRepo, parsePr, prLabel, sessionsForPr, type Pr, type Workspace } from "./pr";
+import { agentsOnPr, DAEMON_URL, isPrWorkspace as onPr, isRepo, parsePr, prLabel, sessionsForPr, stackOf, type Pr, type StackPr, type Workspace } from "./pr";
 
 const NEW_WORKTREE = "__new__";
 
@@ -21,16 +21,23 @@ const sendBtn = $<HTMLButtonElement>("send-btn");
 const newBtn = $<HTMLButtonElement>("new-btn");
 const unarchiveBtn = $<HTMLButtonElement>("unarchive-btn");
 const suggest = $<HTMLDivElement>("suggest");
+const stopBtn = $<HTMLButtonElement>("stop-btn");
 
 const daemon = new DaemonClient({ url: DAEMON_URL, clientId: "paseo-graphite", clientType: "browser" });
 const paseo = createPaseoApi(daemon);
 
 type TimelineEntry = Awaited<ReturnType<ReturnType<typeof paseo.agents.ref>["timeline"]["refetch"]>>["entries"][number];
+type Permission = PaseoAgent["pendingPermissions"][number];
+type RewindMode = "conversation" | "files" | "both";
 
 let pr: Pr | null = null;
 let tabUrl: string | undefined;
 let workspaces: Workspace[] = [];
 let agents: PaseoAgent[] = [];
+// Sessions on other PRs in the same stack; `agents` stays the current PR's.
+let stackGroups: { pr: StackPr; agents: PaseoAgent[] }[] = [];
+const stackCache = new Map<string, Promise<StackPr[]>>();
+let rewindMenuFor: string | null = null;
 let selectedId: string | null = null;
 let unsubscribeTimeline: (() => void) | null = null;
 let refetchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -61,20 +68,51 @@ async function loadSessions() {
     selectAgent(null);
     return;
   }
-  ({ workspaces, agents } = await sessionsForPr(paseo, pr));
+  const target = pr;
+  const loaded = await sessionsForPr(paseo, target);
+  workspaces = loaded.workspaces;
+  agents = [...loaded.agents.filter((a) => !a.archivedAt), ...loaded.agents.filter((a) => a.archivedAt)];
+  stackGroups = [];
+  renderPicker();
+  void loadStack(target, loaded.all);
+}
 
-  const option = (a: PaseoAgent) => el("option", { value: a.id, textContent: `${a.status === "running" ? "● " : ""}${a.title ?? a.id.slice(0, 8)}` });
+async function loadStack(target: Pr, all: PaseoAgent[]) {
+  const cwd = workspaces.find((w) => isRepo(w, target))?.workspaceDirectory;
+  if (!cwd) return;
+  const key = prLabel(target);
+  if (!stackCache.has(key)) stackCache.set(key, stackOf(daemon, cwd, target).catch(() => (stackCache.delete(key), [])));
+  const stack = await stackCache.get(key)!;
+  if (pr?.number !== target.number || pr.repo !== target.repo) return;
+  const seen = new Set(agents.map((a) => a.id));
+  stackGroups = stack
+    .filter((s) => s.number !== target.number)
+    .map((s) => {
+      const group = agentsOnPr(workspaces, all, { ...target, number: s.number }).filter((a) => !seen.has(a.id));
+      group.forEach((a) => seen.add(a.id));
+      return { pr: s, agents: group };
+    })
+    .filter((g) => g.agents.length);
+  if (stackGroups.length) renderPicker();
+}
+
+const listed = () => [...agents, ...stackGroups.flatMap((g) => g.agents)];
+
+function renderPicker() {
+  if (!pr) return;
+  const option = (a: PaseoAgent) =>
+    el("option", { value: a.id, textContent: `${a.status === "running" ? "● " : ""}${a.archivedAt ? "(archived) " : ""}${a.title ?? a.id.slice(0, 8)}` });
   const active = agents.filter((a) => !a.archivedAt);
   const archived = agents.filter((a) => a.archivedAt);
-  agents = [...active, ...archived];
   agentSelect.replaceChildren(
-    ...(agents.length
-      ? [...active.map(option), ...(archived.length ? [el("optgroup", { label: "Archived" }, ...archived.map(option))] : [])]
-      : [el("option", { textContent: `No sessions for #${pr.number}` })]),
+    ...(agents.length ? active.map(option) : [el("option", { value: "", textContent: `No sessions for #${pr.number}` })]),
+    ...(archived.length ? [el("optgroup", { label: "Archived" }, ...archived.map(option))] : []),
+    ...stackGroups.map((g) => el("optgroup", { label: `Stack · #${g.pr.number} ${g.pr.title}` }, ...g.agents.map(option))),
   );
-  const keep = agents.find((a) => a.id === selectedId)?.id ?? agents[0]?.id ?? null;
-  if (keep) agentSelect.value = keep;
-  selectAgent(keep);
+  // A PR with no sessions of its own often has the one that built its stack.
+  const keep = listed().find((a) => a.id === selectedId)?.id ?? agents[0]?.id ?? stackGroups[0]?.agents[0]?.id ?? null;
+  agentSelect.value = keep ?? "";
+  if (keep !== selectedId || !unsubscribeTimeline) selectAgent(keep);
 }
 
 function selectAgent(id: string | null) {
@@ -82,7 +120,9 @@ function selectAgent(id: string | null) {
   unsubscribeTimeline?.();
   unsubscribeTimeline = null;
   selectedId = id;
-  document.body.classList.toggle("archived", !!agents.find((a) => a.id === id)?.archivedAt);
+  rewindMenuFor = null;
+  document.body.classList.remove("busy");
+  document.body.classList.toggle("archived", !!listed().find((a) => a.id === id)?.archivedAt);
   timeline.replaceChildren();
   openInPaseo.hidden = !id;
   if (!id) {
@@ -109,15 +149,19 @@ async function renderTimeline() {
   if (id !== selectedId) return;
   const pinned = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 40;
   const agent = page.agent;
-  const blocked = !!agent?.pendingPermissions?.length;
+  const permissions = agent?.pendingPermissions ?? [];
+  const blocked = permissions.length > 0;
   const busy = agent?.status === "running" || agent?.status === "initializing";
+  document.body.classList.toggle("busy", busy);
+  const rewindModes: RewindMode[] = busy || !agent ? [] : (["conversation", "files", "both"] as const).filter((m) => agent.capabilities?.[capability[m]]);
   timeline.replaceChildren(
-    ...page.entries.map(renderEntry).filter((n): n is HTMLElement => !!n),
-    ...(busy ? [working(blocked ? "Waiting on a permission (Open in Paseo)" : "Working")] : []),
+    ...page.entries.map((e) => renderEntry(e, id, rewindModes)).filter((n): n is HTMLElement => !!n),
+    ...permissions.map((p) => permissionCard(id, p)),
+    ...(busy && !blocked ? [working("Working")] : []),
   );
   if (pinned) timeline.scrollTop = timeline.scrollHeight;
   if (agent) {
-    const waiting = blocked ? " · waiting on a permission (open in Paseo)" : "";
+    const waiting = blocked ? " · waiting on you" : "";
     setStatus(`${agent.status} · ${agent.model ?? agent.provider} · ${agent.thinkingOptionId ?? "default"}${waiting}`);
   }
   // ponytail: a turn can go quiet (long tool call) without stream events; re-check while busy so the indicator clears.
@@ -127,14 +171,95 @@ async function renderTimeline() {
   }
 }
 
+async function rewindTo(agentId: string, messageId: string, mode: RewindMode, text: string) {
+  try {
+    await daemon.rewindAgent(agentId, messageId, mode);
+    // Like Paseo: rewinding the conversation hands the message back to the composer.
+    if (mode !== "files") (prompt.value = text), prompt.focus();
+  } catch (err) {
+    setStatus(`Rewind failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  rewindMenuFor = null;
+  void renderTimeline();
+}
+
+function permissionCard(agentId: string, p: Permission) {
+  const detail = p.detail && "command" in p.detail ? String(p.detail.command) : p.input ? JSON.stringify(p.input, null, 2) : "";
+  const card = el(
+    "div",
+    { className: "permission" },
+    el("b", { textContent: p.title ?? p.name }),
+    ...(p.description ? [el("div", { textContent: p.description })] : []),
+    ...(detail ? [el("pre", { textContent: detail.slice(0, 4000) })] : []),
+  );
+  const respond = async (response: Parameters<typeof daemon.respondToPermission>[2]) => {
+    card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    try {
+      await daemon.respondToPermission(agentId, p.id, response);
+    } catch (err) {
+      setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    void renderTimeline();
+  };
+  const row = el("div", { className: "row" });
+  // ponytail: questions need typed answers; send those to Paseo rather than rebuilding its question form.
+  if (p.kind === "question") {
+    const open = el("button", { textContent: "Answer in Paseo" });
+    open.onclick = () => openInPaseo.click();
+    row.append(open);
+  } else {
+    const actions = p.actions?.length
+      ? p.actions
+      : [
+          { id: "", label: "Allow", behavior: "allow" as const, variant: "primary" as const },
+          { id: "", label: "Deny", behavior: "deny" as const, variant: "danger" as const },
+        ];
+    for (const a of actions) {
+      const btn = el("button", { textContent: a.label, className: a.variant ?? "" });
+      btn.onclick = () =>
+        void respond(
+          a.behavior === "allow"
+            ? { behavior: "allow", ...(a.id ? { selectedActionId: a.id } : {}) }
+            : { behavior: "deny", ...(a.id ? { selectedActionId: a.id } : {}), message: "Denied from the Graphite panel" },
+        );
+      row.append(btn);
+    }
+  }
+  card.append(row);
+  return card;
+}
+
 function working(label: string) {
   return el("div", { className: "working" }, el("span", { className: "dots" }, el("i"), el("i"), el("i")), label);
 }
 
-function renderEntry({ item }: TimelineEntry): HTMLElement | null {
+const capability = { conversation: "supportsRewindConversation", files: "supportsRewindFiles", both: "supportsRewindBoth" } as const;
+const rewindLabels: Record<RewindMode, string> = { conversation: "Rewind conversation", files: "Rewind files", both: "Rewind conversation and files" };
+
+function renderEntry({ item }: TimelineEntry, agentId: string, rewindModes: RewindMode[]): HTMLElement | null {
   switch (item.type) {
-    case "user_message":
-      return el("div", { className: "msg user", textContent: item.text });
+    case "user_message": {
+      const msg = el("div", { className: "msg user", textContent: item.text });
+      const messageId = item.messageId;
+      if (!messageId || !rewindModes.length) return msg;
+      const rewind = el("button", { className: "rewind-btn", title: "Rewind to this message", textContent: "↺" });
+      rewind.onclick = () => {
+        rewindMenuFor = rewindMenuFor === messageId ? null : messageId;
+        void renderTimeline();
+      };
+      const wrap = el("div", { className: "user-wrap" }, rewind, msg);
+      if (rewindMenuFor !== messageId) return wrap;
+      const menu = el("div", { className: "rewind-menu" }, el("span", { textContent: "This can't be undone." }));
+      for (const mode of rewindModes) {
+        const btn = el("button", { textContent: rewindLabels[mode] });
+        btn.onclick = () => void rewindTo(agentId, messageId, mode, item.text);
+        menu.append(btn);
+      }
+      const cancel = el("button", { textContent: "Cancel" });
+      cancel.onclick = () => ((rewindMenuFor = null), void renderTimeline());
+      menu.append(cancel);
+      return el("div", {}, wrap, menu);
+    }
     case "assistant_message":
       return markdown(item.text);
     case "reasoning":
@@ -232,6 +357,7 @@ async function send() {
     else if (selectedId) {
       await paseo.agents.ref(selectedId).send(text);
       timeline.append(el("div", { className: "msg user", textContent: text }), working("Working"));
+      document.body.classList.add("busy");
       timeline.scrollTop = timeline.scrollHeight;
     } else return;
     prompt.value = "";
@@ -308,9 +434,21 @@ timeline.onclick = (e) => {
   e.preventDefault();
   if (/^https?:/.test(link.href)) void chrome.tabs.create({ url: link.href });
 };
-agentSelect.onchange = () => selectAgent(agentSelect.value);
+agentSelect.onchange = () => selectAgent(agentSelect.value || null);
 newBtn.onclick = () => (isCreating() ? (closeNewForm(), void loadSessions()) : void openNewForm());
 sendBtn.onclick = () => void send();
+stopBtn.onclick = async () => {
+  if (!selectedId) return;
+  stopBtn.disabled = true;
+  try {
+    await daemon.cancelAgent(selectedId);
+  } catch (err) {
+    setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    stopBtn.disabled = false;
+  }
+  void renderTimeline();
+};
 unarchiveBtn.onclick = async () => {
   if (!selectedId) return;
   unarchiveBtn.disabled = true;
