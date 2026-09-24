@@ -11,6 +11,9 @@ export function parsePr(url: string | undefined): Pr | null {
   return m ? { owner: m[1].toLowerCase(), repo: m[2].toLowerCase(), number: Number(m[3]) } : null;
 }
 
+// Set by scripts/pr-touch.mjs and on sessions started from the panel.
+export const prLabel = (target: Pr) => `pr:${target.owner}/${target.repo}#${target.number}`;
+
 export function isRepo(w: Workspace, target: Pr) {
   return (w.gitRuntime?.remoteUrl ?? "").toLowerCase().includes(`/${target.owner}/${target.repo}`);
 }
@@ -22,8 +25,7 @@ export function isPrWorkspace(w: Workspace, target: Pr | null) {
 export async function sessionsForPr(paseo: Paseo, target: Pr) {
   const [ws, ag] = await Promise.all([paseo.workspaces.list(), paseo.agents.list({ filter: { includeArchived: true } })]);
   const prWorkspaceIds = new Set(ws.entries.filter((w) => isPrWorkspace(w, target)).map((w) => w.id));
-  // Set by scripts/pr-touch.mjs, which catches PRs opened by subagents or on branches the workspace has since left.
-  const label = `pr:${target.owner}/${target.repo}#${target.number}`;
+  const label = prLabel(target);
   const agents = ag.entries
     .map((e) => e.agent)
     .filter((a) => (a.workspaceId && prWorkspaceIds.has(a.workspaceId)) || label in (a.labels ?? {}))

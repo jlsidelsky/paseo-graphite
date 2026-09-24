@@ -1,7 +1,7 @@
 import { createPaseoApi, type PaseoAgent } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import MarkdownIt from "markdown-it";
-import { DAEMON_URL, isPrWorkspace as onPr, isRepo, parsePr, sessionsForPr, type Pr, type Workspace } from "./pr";
+import { DAEMON_URL, isPrWorkspace as onPr, isRepo, parsePr, prLabel, sessionsForPr, type Pr, type Workspace } from "./pr";
 
 const NEW_WORKTREE = "__new__";
 
@@ -190,13 +190,17 @@ async function createSession(text: string) {
     const repoRoot = workspaces.find((w) => isRepo(w, target))?.projectRootPath;
     if (!repoRoot) throw new Error(`No Paseo project for ${pr.owner}/${pr.repo}`);
     setStatus("Creating worktree…");
+    timeline.replaceChildren(el("div", { className: "empty", textContent: `Creating a worktree for PR #${pr.number}. This takes a few seconds.` }));
     workspace = await paseo.workspaces.create({
       source: { kind: "worktree", cwd: repoRoot, action: "checkout", checkoutSource: { kind: "change_request", forge: "github", number: pr.number } },
     });
   } else {
     workspace = paseo.workspaces.ref(workspaceSelect.value);
   }
-  const agent = await workspace.agents.create({ config, prompt: text });
+  setStatus("Starting session…");
+  // Tag it now: a new worktree isn't linked to the PR until Paseo resolves its branch, and another workspace never is.
+  const labels = { [prLabel(pr)]: new Date().toISOString().slice(0, 10) };
+  const agent = await workspace.agents.create({ config, prompt: text, labels });
   closeNewForm();
   selectedId = agent.id;
   unsubscribeTimeline?.();
