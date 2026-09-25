@@ -29,8 +29,10 @@
     .menu-item span { color: var(--muted); font-size: 12px; margin-left: auto; }
     .menu-link { border: 0; background: none; color: var(--accent); padding: 2px 6px; font-size: 12px; text-align: left; }
     .menu-note { color: var(--muted); padding: 4px 6px; font-size: 12px; }
-    .scope { display: flex; flex-direction: column; gap: 1px; padding-bottom: 4px; border-bottom: 1px solid var(--border); margin-bottom: 2px; }
-    .scope h4 { flex: 1; }
+    #actions .sep { width: 1px; background: var(--border); margin: 2px 0; }
+    #scope-btn:disabled { opacity: .7; }
+    .scope { display: flex; flex-direction: column; gap: 1px; padding-top: 2px; border-top: 1px solid var(--border); margin-top: 2px; }
+    .scope .primary { align-self: flex-end; margin: 4px 6px 2px; font-size: 12px; background: var(--accent); border-color: var(--accent); color: #fff; }
     .scope label { display: flex; gap: 6px; align-items: center; padding: 1px 6px; font-size: 12px; cursor: pointer; }
     .scope label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .scope input { accent-color: var(--accent); margin: 0; flex: none; }
@@ -143,6 +145,8 @@
     <button id="customize-btn" class="menu-link">Customize prompts…</button>
   </div>
   <div id="actions" hidden>
+    <button id="scope-btn">This PR ▾</button>
+    <span class="sep"></span>
     <button id="review-btn" title="Review this PR or its stack">Review ▾</button>
     <button id="fix-ci-btn">Fix CI</button>
     <button id="feedback-btn" title="Evaluate or address review feedback">Feedback ▾</button>

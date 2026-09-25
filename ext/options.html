@@ -13,9 +13,18 @@
     button { cursor: pointer; }
     .preset { display: flex; flex-direction: column; gap: 6px; padding: 10px; margin-bottom: 8px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; }
     .row { display: flex; gap: 6px; align-items: center; }
+    .row.wrap { flex-wrap: wrap; align-items: flex-end; }
     .row input[name=label] { flex: 1; }
+    .row label { display: flex; flex-direction: column; gap: 1px; }
+    .row label.check { flex-direction: row; align-items: center; gap: 4px; padding-bottom: 5px; }
+    input.command { width: 150px; } input.order { width: 60px; }
     textarea { width: 100%; box-sizing: border-box; min-height: 90px; resize: vertical; }
+    textarea.short { min-height: 34px; }
+    details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+    details[open] summary { margin-bottom: 6px; }
+    h3 { font-size: 13px; margin: 16px 0 6px; }
     .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .bar { position: sticky; bottom: 0; padding: 10px 0; background: var(--bg); border-top: 1px solid var(--border); margin-top: 16px; }
   </style>
 </head>
 <body>
@@ -23,16 +32,26 @@
   <section id="presets">
     <h2>Prompt presets</h2>
     <p>
-      The panel's <b>Review</b>, <b>Fix CI</b> and <b>Feedback</b> actions put these in the composer. Slash commands and skills your sessions
-      have (like <code>/code-review</code>) show up next to them on their own. Placeholders: <code>{pr}</code> (#123), <code>{url}</code>,
-      <code>{prs}</code> (one "#n url" line per PR in the review's scope, bottom to top), <code>{checks}</code> (failing checks, for Fix CI),
-      <code>{comment}</code> (the comment, for a comment's Evaluate / Address; empty from the menu). Provider (e.g. <code>claude</code>,
-      <code>codex</code>) preselects that provider's model for a new session. Fix CI uses the first CI preset, and a comment's Evaluate /
-      Address the first of that kind; a skill like <code>/assess-feedback</code> is used instead while that preset is unedited.
+      The panel's <b>Review</b>, <b>Fix CI</b> and <b>Feedback</b> actions put these in the composer, over the PRs picked in the panel's scope
+      control (this PR or some or all of its stack). A preset is a prompt, or a slash command (like <code>/code-review</code>) followed by the PRs
+      and your extra instructions. Placeholders: <code>{prs}</code> (one "#n url" line per PR in scope, bottom to top), <code>{pr}</code> (#123) and
+      <code>{url}</code> (the PR you're on), <code>{checks}</code> (failing checks per PR), <code>{comment}</code> (the comment, for a comment's
+      Evaluate / Address; empty from the menu).
     </p>
-    <div id="list"></div>
-    <div class="row">
-      <button id="add">Add preset</button><button id="reset">Reset to defaults</button><span style="flex: 1"></span>
+    <p>
+      <b>Scope</b> overrides the panel's choice; <i>Ask</i> opens the PR picker first. <b>Session</b>: ＋ New on a new worktree of the topmost PR
+      in scope (Review's default), ＋ New on that PR's existing workspace (Fix CI's and Feedback's default), or the session already selected.
+      Model, effort and mode preselect ＋ New. Favorites go to the top of their menu; hidden ones are left out; <b>Order</b> sorts the rest (lowest
+      first). Fix CI runs its first preset, or shows a menu if you have several. A comment's Evaluate / Address uses a favorite, else a skill like
+      <code>/assess-feedback</code> while that kind's first preset is unedited, else that preset.
+    </p>
+    <div id="kinds"></div>
+    <h2>Discovered commands</h2>
+    <p>Review and feedback commands the panel found in your sessions, by provider. Rename, hide, favorite, reorder, or give them defaults.</p>
+    <p id="offline" hidden>Can't reach Paseo, so model, effort and mode lists only show what's saved.</p>
+    <div id="commands"></div>
+    <div class="row bar">
+      <button id="reset">Reset to defaults</button><span style="flex: 1"></span>
       <small id="saved"></small><button id="save" class="primary">Save</button>
     </div>
   </section>

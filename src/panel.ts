@@ -2,17 +2,24 @@ import { createPaseoApi, type PaseoAgent } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import MarkdownIt from "markdown-it";
 import {
+  arrange,
   checksText,
+  commandPreset,
   DEFAULT_PRESETS,
-  feedbackPrompt,
-  fillPrompt,
-  inScope,
+  feedbackPreset,
   isFeedbackCommand,
   isReviewCommand,
+  loadStore,
   mergeDraft,
+  newDefaultsFor,
+  presetScope,
+  presetText,
   prLines,
   prUrl,
   scopeText,
+  type DiscoveredCache,
+  type Found,
+  type NewDefaults,
   type Preset,
 } from "./actions";
 import { diffStrings, parseUnifiedDiff, type DiffLine } from "./diff";
@@ -69,6 +76,7 @@ const pinBtn = $<HTMLButtonElement>("pin-btn");
 const goTo = $<HTMLAnchorElement>("go-to");
 const actionsBar = $<HTMLDivElement>("actions");
 const menuBox = $<HTMLDivElement>("menu");
+const scopeBtn = $<HTMLButtonElement>("scope-btn");
 const reviewBtn = $<HTMLButtonElement>("review-btn");
 const fixCiBtn = $<HTMLButtonElement>("fix-ci-btn");
 const feedbackBtn = $<HTMLButtonElement>("feedback-btn");
@@ -93,11 +101,9 @@ let stackGroups: { pr: StackPr; agents: PaseoAgent[] }[] = [];
 const stackCache = new Map<string, Promise<StackPr[]>>();
 // The whole stack, bottom to top, once loaded; empty when the PR isn't in one.
 let stackPrs: StackPr[] = [];
-// What a PR action suggests for a new session, if the user opens ＋ New: a worktree on PR `number` (or its
-// existing workspace when `reuse`) and a model of `provider`.
-type NewDefaults = { number: number; reuse: boolean; provider?: string };
+// What a PR action suggests for a new session, if the user opens ＋ New.
 let newDefaults: NewDefaults | null = null;
-// Review scope: the stack PRs ticked in the Review menu.
+// The actions' scope: the stack PRs picked in the scope control. Back to this PR on every PR switch.
 let picked = new Set<number>();
 let rewindMenuFor: string | null = null;
 let selectedId: string | null = null;
@@ -163,7 +169,7 @@ async function loadSessions() {
   stackGroups = [];
   stackPrs = [];
   actionsBar.hidden = !target;
-  if (target) updateFixCi();
+  if (target) renderScope();
   renderPicker();
   if (target) void loadStack(target, everyone);
 }
@@ -176,6 +182,7 @@ async function loadStack(target: Pr, all: PaseoAgent[]) {
   const stack = await stackCache.get(key)!;
   if (pr?.number !== target.number || pr.repo !== target.repo) return;
   stackPrs = stack;
+  renderScope();
   const seen = new Set(agents.map((a) => a.id));
   stackGroups = stack
     .filter((s) => s.number !== target.number)
@@ -582,7 +589,8 @@ async function openNewForm() {
       el("optgroup", { label: "Other workspaces" }, ...others.map(option)),
     );
     const target = d?.number ?? pr.number;
-    workspaceSelect.value = (d?.reuse !== false && target === pr.number && prWs[0]?.id) || NEW_WORKTREE + target;
+    const existing = workspaces.find((w) => onPr(w, { ...pr!, number: target }));
+    workspaceSelect.value = (d?.reuse !== false && existing?.id) || NEW_WORKTREE + target;
   } else if (ticket) {
     const id = ticket.id;
     const onTicket = workspaces.filter((w) => isTicketWorkspace(w, id));
@@ -623,10 +631,14 @@ async function openNewForm() {
   modeSelect.onchange = () => localStorage.setItem(`mode:${modelSelect.value.split("/")[0]}`, modeSelect.value);
   modelSelect.onchange = () => (fillEfforts(), fillModes());
   const of = (p: string) => models.find((m) => m.isDefault && m.key.startsWith(`${p}/`)) ?? models.find((m) => m.key.startsWith(`${p}/`));
-  const preferred = (d?.provider && of(d.provider)) || of("claude") || models[0];
+  const preferred = (d?.model && models.find((m) => m.key === d.model)) || (d?.provider && of(d.provider)) || of("claude") || models[0];
   if (preferred) modelSelect.value = preferred.key;
+  // A preset's effort and mode, where this model and provider offer them.
+  const pick = (select: HTMLSelectElement, value?: string) => value && [...select.options].some((o) => o.value === value) && (select.value = value);
   fillEfforts();
+  pick(effortSelect, d?.effort);
   fillModes();
+  pick(modeSelect, d?.mode);
 }
 
 const byRecency = (list: PaseoAgent[]) => [...list].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -806,21 +818,22 @@ function fillComposer(text: string) {
   prompt.setSelectionRange(prompt.value.length, prompt.value.length);
 }
 
-function act(text: string, defaults: NewDefaults) {
+function act(text: string, defaults: NewDefaults | null) {
   closeMenu();
   newDefaults = defaults;
+  // No defaults: the preset targets the selected session, so leave the new-session form.
+  if (!defaults && isCreating()) closeNewForm(), void loadSessions();
   fillComposer(text);
   // Re-run the form so an open one takes the new defaults.
-  if (isCreating()) void openNewForm();
+  if (defaults && isCreating()) void openNewForm();
 }
 
-const loadPresets = () =>
-  chrome.storage.sync.get({ presets: DEFAULT_PRESETS }).then((r) => (Array.isArray(r.presets) ? (r.presets as Preset[]) : DEFAULT_PRESETS));
+const loadPresets = () => loadStore(chrome.storage.sync);
 
-type Found = Command & { provider: string; providerLabel: string };
+type Discovered = Found & { providerLabel: string };
 
 // Commands are per session, and a session only exists once started, so ask one per ready provider: this PR's first, else the latest.
-async function discover(): Promise<Found[]> {
+async function discover(): Promise<Discovered[]> {
   const snapshot = await paseo.providers.snapshot();
   const pool = [...listed(), ...byRecency(everyone)].filter((a) => !a.archivedAt);
   const lists = await Promise.all(
@@ -831,25 +844,64 @@ async function discover(): Promise<Found[]> {
         return a ? (await commandsOf(a.id)).map((c) => ({ ...c, provider: p.provider, providerLabel: p.label ?? p.provider })) : [];
       }),
   );
-  return lists.flat();
+  const found = lists.flat();
+  void cacheDiscovered(found);
+  return found;
 }
 
-const ghPr = () => workspaces.filter(isPrWorkspace).map((w) => w.githubRuntime?.pullRequest).find((p) => p?.checks?.length);
+// The options page lists the last review and feedback commands seen per provider, to rename, hide or favorite them.
+async function cacheDiscovered(found: Discovered[]) {
+  const fresh: DiscoveredCache = {};
+  for (const c of found) {
+    const kind = isReviewCommand(c) ? "review" : isFeedbackCommand(c) ? "feedback" : null;
+    if (kind) (fresh[c.provider] ??= { label: c.providerLabel, commands: [] }).commands.push({ name: c.name, description: c.description ?? "", kind });
+  }
+  const { discovered } = await chrome.storage.local.get<{ discovered: DiscoveredCache }>({ discovered: {} });
+  await chrome.storage.local.set({ discovered: { ...discovered, ...fresh } });
+}
+
+// The GitHub data of a workspace on PR `n`, if one has its checks.
+const ghPr = (n: number) =>
+  workspaces
+    .filter((w) => onPr(w, { ...pr!, number: n }))
+    .map((w) => w.githubRuntime?.pullRequest)
+    .find((p) => p?.checks?.length);
+
+// The whole stack bottom to top, or just this PR; and the part of it the actions cover.
+const stackNumbers = () => (stackPrs.length > 1 ? stackPrs.map((s) => s.number) : [pr!.number]);
+const scopePrs = () => presetScope({}, stackNumbers(), picked, pr!.number);
 
 function updateFixCi() {
-  const passing = ghPr()?.checksStatus === "success";
+  const passing = scopePrs().every((n) => ghPr(n)?.checksStatus === "success");
   fixCiBtn.disabled = passing;
   fixCiBtn.title = passing ? "All checks pass" : "Ask a session to fix the failing checks";
 }
 
+function renderScope() {
+  const [all, prs, current] = [stackNumbers(), scopePrs(), pr!.number];
+  const stacked = all.length > 1;
+  scopeBtn.disabled = !stacked;
+  scopeBtn.title = stacked ? "Which PRs Review, Fix CI and Feedback cover" : "This PR isn't in a stack";
+  scopeBtn.textContent = !stacked
+    ? "This PR (no stack)"
+    : prs.length === all.length
+      ? `Whole stack (${all.length}) ▾`
+      : prs.length > 1
+        ? `${prs.length} PRs ▾`
+        : prs[0] === current
+          ? "This PR ▾"
+          : `#${prs[0]} ▾`;
+  updateFixCi();
+}
+
 async function commentPrompt(intent: "evaluate" | "address", comment: string) {
-  const [presets, found] = await Promise.all([loadPresets(), discover()]);
+  const [store, found] = await Promise.all([loadPresets(), discover()]);
   // A skill only helps if the session it's sent to has it; with no session chosen yet, ＋ New preselects its provider.
   const target = isCreating() ? undefined : listed().find((a) => a.id === selectedId)?.provider;
+  const x = feedbackPreset(`feedback-${intent}`, store, found.filter((c) => !target || c.provider === target));
   const vars = pr ? { pr: `#${pr.number}`, url: prUrl(pr), prs: prLines(pr, [pr.number]), comment } : { comment };
-  const r = feedbackPrompt(`feedback-${intent}`, presets, found.filter((c) => !target || c.provider === target), vars);
-  if (pr) newDefaults = { number: pr.number, reuse: true, provider: r.provider };
-  return r.text;
+  if (pr) newDefaults = newDefaultsFor(x, [pr.number]);
+  return presetText(x, vars, comment || vars.url);
 }
 
 let menuFor: HTMLElement | null = null;
@@ -859,16 +911,16 @@ function closeMenu() {
   menuBox.hidden = true;
 }
 
-async function openMenu(anchor: HTMLElement, build: () => Promise<Node[]>) {
+async function openMenu(anchor: HTMLElement, build: () => Promise<Node[]>, customize = true) {
   if (menuFor === anchor) return closeMenu();
   menuFor = anchor;
   menuBox.style.left = `${anchor.offsetLeft}px`;
   menuBox.replaceChildren(el("div", { className: "menu-note", textContent: "Loading…" }));
   menuBox.hidden = false;
   const nodes = await build().catch((err) => [el("div", { className: "menu-note", textContent: String(err) })]);
-  const customize = el("button", { className: "menu-link", textContent: "Customize…" });
-  customize.onclick = () => (closeMenu(), void chrome.runtime.openOptionsPage());
-  if (menuFor === anchor) menuBox.replaceChildren(...nodes, customize);
+  const link = el("button", { className: "menu-link", textContent: "Customize…" });
+  link.onclick = () => (closeMenu(), void chrome.runtime.openOptionsPage());
+  if (menuFor === anchor) menuBox.replaceChildren(...nodes, ...(customize ? [link] : []));
 }
 
 function menuItem(label: string, sub: string | undefined, onPick: () => void, title = "") {
@@ -879,78 +931,82 @@ function menuItem(label: string, sub: string | undefined, onPick: () => void, ti
 
 const heading = (text: string) => el("h4", { textContent: text });
 
-// Checkboxes over the stack; the scope is whatever is ticked.
-function scopeBox(stack: StackPr[], current: number) {
-  const boxes = stack.map((s) => {
+// This PR, the whole stack, or the PRs ticked, bottom to top. `then` is an action waiting on the choice.
+function scopeMenu(then?: () => void) {
+  const current = pr!.number;
+  const set = (numbers: number[]) => () => ((picked = new Set(numbers)), renderScope(), then ? then() : closeMenu());
+  const boxes = stackPrs.map((s) => {
     const box = el("input", { type: "checkbox", checked: picked.has(s.number) });
-    box.onchange = () => (box.checked ? picked.add(s.number) : picked.delete(s.number));
+    box.onchange = () => {
+      if (!box.checked && scopePrs().length === 1) return void (box.checked = true);
+      box.checked ? picked.add(s.number) : picked.delete(s.number);
+      renderScope();
+    };
     return el("label", { title: s.title }, box, el("span", { textContent: `#${s.number}${s.number === current ? " (this PR)" : ""} ${s.title}` }));
   });
-  const set = (numbers: number[]) => () => {
-    picked = new Set(numbers);
-    boxes.forEach((l, i) => (l.querySelector("input")!.checked = picked.has(stack[i].number)));
-  };
-  const quick = (label: string, numbers: number[]) => {
-    const b = el("button", { className: "menu-link", textContent: label });
-    b.onclick = set(numbers);
-    return b;
-  };
-  return el(
-    "div",
-    { className: "scope" },
-    el("div", { className: "row" }, el("h4", { textContent: "Scope" }), quick("This PR", [current]), quick("Whole stack", stack.map((s) => s.number))),
-    ...[...boxes].reverse(),
-  );
+  const go = el("button", { className: "primary", textContent: "Fill composer" });
+  go.onclick = () => then?.();
+  return [
+    menuItem("This PR", `#${current}`, set([current])),
+    menuItem("Whole stack", `${stackPrs.length} PRs`, set(stackNumbers())),
+    el("div", { className: "scope" }, heading("Choose PRs, bottom to top"), ...boxes, ...(then ? [go] : [])),
+  ];
+}
+
+scopeBtn.onclick = () => void openMenu(scopeBtn, async () => scopeMenu(), false);
+
+// Fills the composer with a preset over its scope, and points ＋ New at the topmost PR in it.
+function runPreset(x: Preset) {
+  const p = pr!;
+  if (x.scope === "ask" && stackNumbers().length > 1)
+    return void openMenu(scopeBtn, async () => [heading(`${x.label}: which PRs?`), ...scopeMenu(() => runPreset({ ...x, scope: undefined }))], false);
+  const prs = presetScope(x, stackNumbers(), picked, p.number);
+  picked = new Set(prs);
+  renderScope();
+  const checks = checksText(prs.map((n) => ({ number: n, checks: ghPr(n)?.checks })));
+  act(presetText(x, { pr: `#${p.number}`, url: prUrl(p), prs: prLines(p, prs), checks }, scopeText(p, prs)), newDefaultsFor(x, prs));
+}
+
+// Favorites, presets and commands alike, on top; then the presets; then the other commands.
+function presetMenu(own: Preset[], commands: (Preset & { description?: string })[]) {
+  const item = (x: Preset & { description?: string }) => menuItem(`${x.favorite ? "★ " : ""}${x.label}`, x.provider, () => runPreset(x), x.description);
+  const [mine, found] = [arrange(own), arrange(commands)];
+  const rest = found.filter((x) => !x.favorite);
+  return [
+    ...[...mine.filter((x) => x.favorite), ...found.filter((x) => x.favorite), ...mine.filter((x) => !x.favorite)].map(item),
+    ...(rest.length ? [heading("Commands")] : []),
+    ...rest.map(item),
+  ];
 }
 
 reviewBtn.onclick = () =>
   void openMenu(reviewBtn, async () => {
-    const p = pr!;
-    const [stack, found, presets] = await Promise.all([stackCache.get(prLabel(p)) ?? Promise.resolve([]), discover(), loadPresets()]);
-    const numbers = stack.length > 1 ? stack.map((s) => s.number) : [p.number];
-    if (!inScope(numbers, picked).length) picked = new Set([p.number]);
-    const pick = (text: (prs: number[]) => string, provider?: string) => () => {
-      const prs = inScope(numbers, picked);
-      if (!prs.length) return setStatus("Tick at least one PR");
-      // The topmost PR's branch contains everything below it.
-      act(text(prs), { number: prs.at(-1)!, reuse: false, provider });
-    };
-    const commands = found.filter(isReviewCommand);
-    return [
-      ...(stack.length > 1 ? [scopeBox(stack, p.number)] : []),
-      ...presets
-        .filter((x) => x.kind === "review")
-        .map((x) => menuItem(x.label, x.provider, pick((prs) => fillPrompt(x.prompt, { pr: `#${p.number}`, url: prUrl(p), prs: prLines(p, prs) }), x.provider))),
-      ...(commands.length ? [heading("Commands")] : []),
-      ...commands.map((c) => menuItem(`/${c.name}`, c.providerLabel, pick((prs) => `/${c.name} ${scopeText(p, prs)}`, c.provider), c.description)),
-    ];
+    const [found, store] = await Promise.all([discover(), loadPresets()]);
+    return presetMenu(
+      store.presets.filter((x) => x.kind === "review"),
+      found.filter(isReviewCommand).map((c) => commandPreset(c, "review", store.overrides)),
+    );
   });
 
+// One CI preset runs straight away; several get a menu.
 fixCiBtn.onclick = async () => {
-  const p = pr!;
-  const preset = (await loadPresets()).find((x) => x.kind === "ci") ?? DEFAULT_PRESETS.find((x) => x.kind === "ci")!;
-  const text = fillPrompt(preset.prompt, { pr: `#${p.number}`, url: prUrl(p), prs: prLines(p, [p.number]), checks: checksText(ghPr()?.checks, p.number) });
-  act(text, { number: p.number, reuse: true, provider: preset.provider });
+  const ci = arrange((await loadPresets()).presets.filter((x) => x.kind === "ci"));
+  if (ci.length > 1) return void openMenu(fixCiBtn, async () => presetMenu(ci, []));
+  runPreset(ci[0] ?? DEFAULT_PRESETS.find((x) => x.kind === "ci")!);
 };
 
 feedbackBtn.onclick = () =>
   void openMenu(feedbackBtn, async () => {
-    const p = pr!;
-    const [found, presets] = await Promise.all([discover(), loadPresets()]);
-    const vars = { pr: `#${p.number}`, url: prUrl(p), prs: prLines(p, [p.number]) };
-    const to = (provider?: string) => ({ number: p.number, reuse: true, provider });
-    const commands = found.filter(isFeedbackCommand);
-    return [
-      ...presets
-        .filter((x) => x.kind.startsWith("feedback-"))
-        .map((x) => menuItem(x.label, x.provider, () => act(fillPrompt(x.prompt, vars), to(x.provider)))),
-      ...(commands.length ? [heading("Commands")] : []),
-      ...commands.map((c) => menuItem(`/${c.name}`, c.providerLabel, () => act(`/${c.name} ${prUrl(p)}`, to(c.provider)), c.description)),
-    ];
+    const [found, store] = await Promise.all([discover(), loadPresets()]);
+    return presetMenu(
+      store.presets.filter((x) => x.kind.startsWith("feedback-")),
+      found.filter(isFeedbackCommand).map((c) => commandPreset(c, "feedback-address", store.overrides)),
+    );
   });
 
+// By path, not containment: picking an item can replace it (an "ask" preset swaps in the scope picker).
 document.addEventListener("click", (e) => {
-  if (menuFor && e.target instanceof Node && !menuBox.contains(e.target) && !menuFor.contains(e.target)) closeMenu();
+  if (menuFor && !e.composedPath().some((n) => n === menuBox || n === menuFor)) closeMenu();
 });
 
 async function syncActiveTab(force = false) {
