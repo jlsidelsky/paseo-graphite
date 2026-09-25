@@ -1,6 +1,6 @@
 import { createPaseoApi, type PaseoAgent } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { agentsOnPr, alertFor, DAEMON_URL, groupStacks, isRepo, parsePr, rowAuthor, rowPr, SETTINGS, type Alert, type Pr, type Workspace } from "./pr";
+import { agentsOnPr, alertFor, ciAlertFor, DAEMON_URL, groupStacks, isRepo, parsePr, rowAuthor, rowPr, SETTINGS, type Alert, type Pr, type Workspace } from "./pr";
 
 void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
@@ -19,6 +19,13 @@ let workspaces = new Map<string, Workspace>();
 let agentsLive: Promise<unknown> | undefined;
 let workspacesLive: Promise<unknown> | undefined;
 let pushTimer: ReturnType<typeof setTimeout> | undefined;
+
+function trackWorkspace(w: Workspace, prev: Workspace | undefined) {
+  workspaces.set(w.id, w);
+  const gh = w.githubRuntime?.pullRequest;
+  const pr = parsePr(gh?.url ?? undefined);
+  if (gh && pr && ciAlertFor(prev?.githubRuntime?.pullRequest, gh) && onPr([...agents.values()], pr).length) void ciAlert(pr, gh.title ?? "");
+}
 
 function track(agent: PaseoAgent, prev: PaseoAgent | undefined) {
   agents.set(agent.id, agent);
@@ -52,10 +59,15 @@ function subscribe() {
     .list({ subscribe: {} })
     .then((r) => {
       r.subscription.subscribe({
-        snapshot: (s) => ((workspaces = new Map(s.entries.map((w) => [w.id, w]))), changed()),
+        snapshot: (s) => {
+          const prev = workspaces;
+          workspaces = new Map();
+          for (const w of s.entries) trackWorkspace(w, prev.get(w.id));
+          changed();
+        },
         update: (m) => {
           if (m.type !== "workspace_update") return;
-          if (m.payload.kind === "upsert") workspaces.set(m.payload.workspace.id, m.payload.workspace);
+          if (m.payload.kind === "upsert") trackWorkspace(m.payload.workspace, workspaces.get(m.payload.workspace.id));
           else workspaces.delete(m.payload.id);
           changed();
         },
@@ -209,7 +221,40 @@ async function alert(agent: PaseoAgent, kind: Alert) {
   });
 }
 
+// With no tab on the PR, still notify: the panel opens it pinned in the last focused window.
+// ponytail: two workspaces on the same PR flipping together show one notification (same id), but may sound twice.
+async function ciAlert(pr: Pr, title: string) {
+  const [tabs, win, settings] = await Promise.all([prTabs(), chrome.windows.getLastFocused().catch(() => undefined), chrome.storage.sync.get(SETTINGS)]);
+  if (!settings.ciAlerts) return;
+  const on = tabs.filter((t) => t.pr.owner === pr.owner && t.pr.repo === pr.repo && t.pr.number === pr.number);
+  if (on.some(({ tab }) => tab.active && win?.focused && tab.windowId === win.id)) return;
+  if (settings.markTab) for (const { id } of on) void send(id, { type: "mark" });
+  const windowId = on[0]?.tab.windowId ?? win?.id;
+  if (!settings.notify || windowId === undefined) return;
+  chrome.notifications.create(`ci|${windowId}|https://app.graphite.com/github/pr/${pr.owner}/${pr.repo}/${pr.number}`, {
+    type: "basic",
+    iconUrl: "icons/128.png",
+    title: `CI failing · PR #${pr.number}`,
+    message: title || "Checks failed",
+    buttons: [{ title: "Fix CI" }],
+  });
+}
+
+// The panel reads the key, shows the PR pinned and, for Fix CI, opens its Fix CI menu.
+function openCi(id: string, fixCi: boolean) {
+  const [, windowId, url] = id.split("|");
+  void chrome.sidePanel.open({ windowId: Number(windowId) });
+  void chrome.windows.update(Number(windowId), { focused: true }).catch(() => {});
+  void chrome.storage.session.set({ [`open:${windowId}`]: { url, at: Date.now(), fixCi } });
+  chrome.notifications.clear(id);
+}
+
+chrome.notifications.onButtonClicked.addListener((id) => {
+  if (id.startsWith("ci|")) openCi(id, true);
+});
+
 chrome.notifications.onClicked.addListener((id) => {
+  if (id.startsWith("ci|")) return openCi(id, false);
   const [windowId, tabId] = id.split(":").map(Number);
   // sidePanel.open needs the click's user gesture, so it goes first and unawaited.
   void chrome.sidePanel.open({ windowId });

@@ -2,7 +2,7 @@ import { createPaseoApi } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { DEFAULT_PRESETS, loadStore, parseHint, PRESET_KINDS, saveStore, type ArgValues, type DiscoveredCache, type Override, type Preset, type Store } from "./actions";
 import { argControls, readArgs } from "./args-form";
-import { DAEMON_URL } from "./pr";
+import { DAEMON_URL, SETTINGS } from "./pr";
 
 type Provider = Awaited<ReturnType<ReturnType<typeof createPaseoApi>["providers"]["snapshot"]>>["entries"][number];
 type Settings = Override & { provider?: string };
@@ -248,6 +248,13 @@ void Promise.all([loadStore(chrome.storage.sync), chrome.storage.local.get<{ dis
   discovered = local.discovered;
   providers = p;
   render(s);
+});
+
+void chrome.storage.sync.get<Record<string, boolean>>(SETTINGS).then((saved) => {
+  for (const input of $("alerts").querySelectorAll("input")) {
+    input.checked = saved[input.name];
+    input.onchange = () => void chrome.storage.sync.set({ [input.name]: input.checked });
+  }
 });
 
 // Inbox: section names come from the last inbox the panel saw.
