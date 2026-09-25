@@ -35,7 +35,7 @@ export function agentsOnPr(workspaces: Workspace[], agents: Agent[], target: Pr)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-export type StackPr = { number: number; title: string };
+export type StackPr = { number: number; title: string; head?: string; base?: string };
 
 type Linked = { number: number; baseRefName?: string; headRefName?: string };
 
@@ -80,7 +80,7 @@ export async function stackOf(daemon: DaemonClient, cwd: string, target: Pr): Pr
   };
   await walk(self.baseRefName, (b) => `head:${b} is:open`, (i, b) => i.headRefName === b, (i) => i.baseRefName);
   await walk(self.headRefName, (b) => `base:${b} is:open`, (i, b) => i.baseRefName === b, (i) => i.headRefName);
-  return orderStack([...found.values()]).map(({ number, title }) => ({ number, title }));
+  return orderStack([...found.values()]).map(({ number, title, headRefName: head, baseRefName: base }) => ({ number, title, head, base }));
 }
 
 // chrome.storage.sync keys and their defaults.

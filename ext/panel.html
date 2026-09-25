@@ -36,6 +36,15 @@
     .scope label { display: flex; gap: 6px; align-items: center; padding: 1px 6px; font-size: 12px; cursor: pointer; }
     .scope label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .scope input { accent-color: var(--accent); margin: 0; flex: none; }
+    .cmd-form { display: flex; flex-direction: column; gap: 4px; padding: 2px 6px 4px; font-size: 12px; }
+    .args { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+    .args input:not([type=checkbox]), .args select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 2px 4px; }
+    .args input.extra { flex: 1 1 100%; box-sizing: border-box; }
+    .args label.check { display: flex; gap: 4px; align-items: center; cursor: pointer; }
+    .args input[type=checkbox] { accent-color: var(--accent); margin: 0; }
+    .cmd-form .menu-note { padding: 0; }
+    .cmd-form .preview { font: 11px ui-monospace, Menlo, monospace; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 3px 5px; white-space: pre-wrap; word-break: break-all; }
+    .cmd-form .primary { align-self: flex-end; background: var(--accent); border-color: var(--accent); color: #fff; }
     #settings .menu-link { padding: 0; }
     #status { padding: 4px 10px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; }
     #status a { color: var(--accent); }

@@ -4,6 +4,7 @@ import MarkdownIt from "markdown-it";
 import {
   arrange,
   checksText,
+  commandArgs,
   commandPreset,
   DEFAULT_PRESETS,
   feedbackPreset,
@@ -12,16 +13,19 @@ import {
   loadStore,
   mergeDraft,
   newDefaultsFor,
+  parseHint,
   presetScope,
   presetText,
   prLines,
   prUrl,
   scopeText,
+  type ArgValues,
   type DiscoveredCache,
   type Found,
   type NewDefaults,
   type Preset,
 } from "./actions";
+import { argControls, readArgs } from "./args-form";
 import { diffStrings, parseUnifiedDiff, type DiffLine } from "./diff";
 import { groupInbox, INBOX_DEFAULTS, loadInboxSettings, pageSections, renderInbox, type InboxRow } from "./inbox-view";
 import { isAnswered, parseQuestions, questionResponse, showsText, type Question } from "./question";
@@ -869,7 +873,7 @@ async function cacheDiscovered(found: Discovered[]) {
   const fresh: DiscoveredCache = {};
   for (const c of found) {
     const kind = isReviewCommand(c) ? "review" : isFeedbackCommand(c) ? "feedback" : null;
-    if (kind) (fresh[c.provider] ??= { label: c.providerLabel, commands: [] }).commands.push({ name: c.name, description: c.description ?? "", kind });
+    if (kind) (fresh[c.provider] ??= { label: c.providerLabel, commands: [] }).commands.push({ name: c.name, description: c.description ?? "", argumentHint: c.argumentHint ?? "", kind });
   }
   const { discovered } = await chrome.storage.local.get<{ discovered: DiscoveredCache }>({ discovered: {} });
   await chrome.storage.local.set({ discovered: { ...discovered, ...fresh } });
@@ -916,7 +920,7 @@ async function commentPrompt(intent: "evaluate" | "address", comment: string) {
   const x = feedbackPreset(`feedback-${intent}`, store, found.filter((c) => !target || c.provider === target));
   const vars = pr ? { pr: `#${pr.number}`, url: prUrl(pr), prs: prLines(pr, [pr.number]), comment } : { comment };
   if (pr) newDefaults = newDefaultsFor(x, [pr.number]);
-  return presetText(x, vars, comment || vars.url);
+  return presetText(x, vars, comment || (pr ? `#${pr.number}` : ""));
 }
 
 let menuFor: HTMLElement | null = null;
@@ -970,21 +974,52 @@ function scopeMenu(then?: () => void) {
 
 scopeBtn.onclick = () => void openMenu(scopeBtn, async () => scopeMenu(), false);
 
+type MenuPreset = Preset & { description?: string; argumentHint?: string };
+
 // Fills the composer with a preset over its scope, and points ＋ New at the topmost PR in it.
-function runPreset(x: Preset) {
+// A command first opens its form in the menu, under `anchor`; the form comes back with its `args`.
+function runPreset(x: MenuPreset, anchor: HTMLElement, args?: string) {
   const p = pr!;
   if (x.scope === "ask" && stackNumbers().length > 1)
-    return void openMenu(scopeBtn, async () => [heading(`${x.label}: which PRs?`), ...scopeMenu(() => runPreset({ ...x, scope: undefined }))], false);
+    return void openMenu(scopeBtn, async () => [heading(`${x.label}: which PRs?`), ...scopeMenu(() => runPreset({ ...x, scope: undefined }, scopeBtn))], false);
   const prs = presetScope(x, stackNumbers(), picked, p.number);
   picked = new Set(prs);
   renderScope();
+  if (x.command && args === undefined) return closeMenu(), void openMenu(anchor, () => commandForm(x, anchor, prs), false);
   const checks = checksText(prs.map((n) => ({ number: n, checks: ghPr(n)?.checks })));
-  act(presetText(x, { pr: `#${p.number}`, url: prUrl(p), prs: prLines(p, prs), checks }, scopeText(p, prs)), newDefaultsFor(x, prs));
+  act(presetText(x, { pr: `#${p.number}`, url: prUrl(p), prs: prLines(p, prs), checks }, args ?? scopeText(prs)), newDefaultsFor(x, prs));
+}
+
+// A command's arguments as controls, the target scope resolves to, a preview of the command line, and Fill composer.
+// The values used last per menu entry come back next time (chrome.storage.local), over the preset's saved ones.
+async function commandForm(x: MenuPreset, anchor: HTMLElement, prs: number[]) {
+  const key = `args:${x.id}`;
+  const last = (await chrome.storage.local.get<Record<string, ArgValues>>(key))[key];
+  const spec = parseHint(x.argumentHint);
+  const target = el("div", { className: "menu-note" });
+  const note = el("div", { className: "menu-note" });
+  const preview = el("code", { className: "preview" });
+  const read = () => {
+    const r = commandArgs(x.command!, spec, readArgs(controls), stackPrs, prs);
+    target.textContent = r.target ? `Target: ${r.target}` : `No PR target in /${x.command}'s arguments`;
+    note.textContent = r.note ?? "";
+    note.hidden = !r.note;
+    preview.textContent = `/${x.command} ${r.args}`.trim();
+    return r.args;
+  };
+  const controls = argControls(spec, { ...x.args, ...last }, read);
+  const go = el("button", { className: "primary", textContent: "Fill composer" });
+  go.onclick = () => {
+    void chrome.storage.local.set({ [key]: readArgs(controls) });
+    runPreset({ ...x, scope: undefined }, anchor, read());
+  };
+  read();
+  return [heading(x.label), el("div", { className: "cmd-form", title: x.argumentHint ?? "" }, controls, target, note, preview, go)];
 }
 
 // Favorites, presets and commands alike, on top; then the presets; then the other commands.
-function presetMenu(own: Preset[], commands: (Preset & { description?: string })[]) {
-  const item = (x: Preset & { description?: string }) => menuItem(`${x.favorite ? "★ " : ""}${x.label}`, x.provider, () => runPreset(x), x.description);
+function presetMenu(anchor: HTMLElement, own: MenuPreset[], commands: MenuPreset[]) {
+  const item = (x: MenuPreset) => menuItem(`${x.favorite ? "★ " : ""}${x.label}`, x.provider, () => runPreset(x, anchor), x.description);
   const [mine, found] = [arrange(own), arrange(commands)];
   const rest = found.filter((x) => !x.favorite);
   return [
@@ -994,11 +1029,16 @@ function presetMenu(own: Preset[], commands: (Preset & { description?: string })
   ];
 }
 
+// A preset naming a command takes that command's argument hint, from its provider's session if it names one.
+const withHint = (x: Preset, found: Found[]): MenuPreset =>
+  x.command ? { ...x, argumentHint: found.find((c) => c.name === x.command && (!x.provider || c.provider === x.provider))?.argumentHint } : x;
+
 reviewBtn.onclick = () =>
   void openMenu(reviewBtn, async () => {
     const [found, store] = await Promise.all([discover(), loadPresets()]);
     return presetMenu(
-      store.presets.filter((x) => x.kind === "review"),
+      reviewBtn,
+      store.presets.filter((x) => x.kind === "review").map((x) => withHint(x, found)),
       found.filter(isReviewCommand).map((c) => commandPreset(c, "review", store.overrides)),
     );
   });
@@ -1006,15 +1046,16 @@ reviewBtn.onclick = () =>
 // One CI preset runs straight away; several get a menu.
 fixCiBtn.onclick = async () => {
   const ci = arrange((await loadPresets()).presets.filter((x) => x.kind === "ci"));
-  if (ci.length > 1) return void openMenu(fixCiBtn, async () => presetMenu(ci, []));
-  runPreset(ci[0] ?? DEFAULT_PRESETS.find((x) => x.kind === "ci")!);
+  if (ci.length > 1) return void openMenu(fixCiBtn, async () => presetMenu(fixCiBtn, ci, []));
+  runPreset(ci[0] ?? DEFAULT_PRESETS.find((x) => x.kind === "ci")!, fixCiBtn);
 };
 
 feedbackBtn.onclick = () =>
   void openMenu(feedbackBtn, async () => {
     const [found, store] = await Promise.all([discover(), loadPresets()]);
     return presetMenu(
-      store.presets.filter((x) => x.kind.startsWith("feedback-")),
+      feedbackBtn,
+      store.presets.filter((x) => x.kind.startsWith("feedback-")).map((x) => withHint(x, found)),
       found.filter(isFeedbackCommand).map((c) => commandPreset(c, "feedback-address", store.overrides)),
     );
   });

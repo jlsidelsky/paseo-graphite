@@ -1,6 +1,7 @@
 import { createPaseoApi } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { DEFAULT_PRESETS, loadStore, PRESET_KINDS, saveStore, type DiscoveredCache, type Override, type Preset, type Store } from "./actions";
+import { DEFAULT_PRESETS, loadStore, parseHint, PRESET_KINDS, saveStore, type ArgValues, type DiscoveredCache, type Override, type Preset, type Store } from "./actions";
+import { argControls, readArgs } from "./args-form";
 import { DAEMON_URL } from "./pr";
 
 type Provider = Awaited<ReturnType<ReturnType<typeof createPaseoApi>["providers"]["snapshot"]>>["entries"][number];
@@ -99,11 +100,32 @@ function readSettings(n: Element): Settings {
   return JSON.parse(JSON.stringify(o)); // drops the unset ones
 }
 
+// A command's argument hint, from the panel's last look at its provider (any provider's, for a preset that names none).
+const hintOf = (name: string, provider?: string) =>
+  Object.entries(discovered)
+    .filter(([p]) => !provider || p === provider)
+    .flatMap(([, d]) => d.commands)
+    .find((c) => c.name === name)?.argumentHint;
+const argsField = (name: string, provider: string | undefined, values: ArgValues) =>
+  el("div", {}, el("small", { textContent: "Default arguments" }), argControls(parseHint(hintOf(name, provider)), values));
+const argsOf = (n: Element) => {
+  const args = readArgs(n);
+  return Object.keys(args).length ? { args } : {};
+};
+
 const newId = () => crypto.randomUUID().slice(0, 8);
 
 // The DOM is the draft; Save reads it back.
 function presetCard(p: Preset) {
   const kind = select("kind", PRESET_KINDS.map((k) => [k, KIND_LABELS[k]]), p.kind);
+  const command = el("input", { name: "command", value: p.command ? `/${p.command}` : "", placeholder: "/command (optional)", className: "command" });
+  const argsSlot = el("div");
+  const fillArgs = (values: ArgValues) => {
+    const name = command.value.trim().replace(/^\//, "");
+    argsSlot.replaceChildren(...(name ? [argsField(name, p.provider, values)] : []));
+  };
+  fillArgs(p.args ?? {});
+  command.onchange = () => fillArgs(readArgs(argsSlot));
   const dup = el("button", { textContent: "Duplicate" });
   const remove = el("button", { textContent: "Delete" });
   const node = el(
@@ -114,10 +136,11 @@ function presetCard(p: Preset) {
       { className: "row" },
       el("input", { name: "label", value: p.label, placeholder: "Label" }),
       kind,
-      el("input", { name: "command", value: p.command ? `/${p.command}` : "", placeholder: "/command (optional)", className: "command" }),
+      command,
       dup,
       remove,
     ),
+    argsSlot,
     el("textarea", { name: "prompt", value: p.prompt, placeholder: "Prompt; or, with a command, extra instructions after its arguments" }),
     el("div", { className: "row wrap" }, defaults(p), placement(p)),
   );
@@ -133,7 +156,7 @@ function presetCard(p: Preset) {
 
 function readPreset(n: HTMLElement): Preset {
   const command = value(n, "command").replace(/^\//, "");
-  return { id: n.dataset.id!, kind: value(n, "kind") as Preset["kind"], label: value(n, "label"), ...(command ? { command } : {}), prompt: value(n, "prompt"), ...readSettings(n) };
+  return { id: n.dataset.id!, kind: value(n, "kind") as Preset["kind"], label: value(n, "label"), ...(command ? { command } : {}), prompt: value(n, "prompt"), ...(command ? argsOf(n) : {}), ...readSettings(n) };
 }
 
 function commandRow(key: string, description: string, o: Override = overrides[key] ?? {}) {
@@ -153,8 +176,9 @@ function commandRow(key: string, description: string, o: Override = overrides[ke
     ),
     el(
       "details",
-      { open: !!(o.prompt || o.scope || o.workspace || o.model || o.effort || o.mode), title: description },
-      el("summary", { textContent: "Instructions and defaults" }),
+      { open: !!(o.prompt || o.args || o.scope || o.workspace || o.model || o.effort || o.mode), title: description },
+      el("summary", { textContent: "Arguments, instructions and defaults" }),
+      argsField(name, provider, o.args ?? {}),
       el("textarea", { name: "prompt", value: o.prompt ?? "", placeholder: "Extra instructions after the command's arguments (optional)", className: "short" }),
       defaults(o, provider),
     ),
@@ -166,7 +190,7 @@ function commandRow(key: string, description: string, o: Override = overrides[ke
 
 function readOverride(n: HTMLElement): Override {
   const { provider: _, ...o } = readSettings(n);
-  return { ...(value(n, "label") ? { label: value(n, "label") } : {}), ...(value(n, "prompt") ? { prompt: value(n, "prompt") } : {}), ...o };
+  return { ...(value(n, "label") ? { label: value(n, "label") } : {}), ...(value(n, "prompt") ? { prompt: value(n, "prompt") } : {}), ...argsOf(n), ...o };
 }
 
 function render(s: Store) {

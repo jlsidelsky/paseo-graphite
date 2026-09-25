@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   arrange,
   checksText,
+  commandArgs,
   commandPreset,
   DEFAULT_PRESETS,
   feedbackPreset,
@@ -13,6 +14,7 @@ import {
   loadStore,
   mergeDraft,
   newDefaultsFor,
+  parseHint,
   presetScope,
   presetText,
   prLines,
@@ -34,8 +36,9 @@ assert.deepEqual(scope, [10, 20, 30]);
 assert.equal(scope.at(-1), 30);
 assert.deepEqual(inScope(stack, new Set([99])), []);
 assert.equal(prLines(p, [10, 20]), `#10 ${url(10)}\n#20 ${url(20)}`);
-assert.equal(scopeText(p, [20]), url(20));
-assert.equal(scopeText(p, [10, 20]), `these PRs as a stack, bottom to top:\n#10 ${url(10)}\n#20 ${url(20)}`);
+// Slash-command arguments carry PR numbers, never URLs.
+assert.equal(scopeText([20]), "#20");
+assert.equal(scopeText([10, 20]), "these PRs as a stack, bottom to top: #10 #20");
 const review = fillPrompt(DEFAULT_PRESETS[0].prompt, { prs: prLines(p, scope) });
 assert.ok(review.includes(`#10 ${url(10)}\n#20 ${url(20)}\n#30 ${url(30)}`) && !review.includes("{"));
 
@@ -61,15 +64,66 @@ assert.equal(checksText([{ number: 20, checks: failing }]), "Failing checks:\n- 
 // Several PRs: per PR, from Paseo's data where a workspace has it, else gh.
 assert.equal(checksText([{ number: 10, checks: failing }, { number: 20 }]), "#10: Failing checks:\n- lint: https://x/1\n- e2e\n\n#20: Run `gh pr checks 20` to see which checks fail.");
 const vars = (prs: number[]) => ({ pr: "#20", url: url(20), prs: prLines(p, prs), checks: checksText(prs.map((number) => ({ number }))) });
-const ciText = presetText(ci, vars([10, 20]), scopeText(p, [10, 20]));
+const ciText = presetText(ci, vars([10, 20]), scopeText([10, 20]));
 assert.ok(ciText.includes(`#10 ${url(10)}\n#20 ${url(20)}`) && ciText.includes("#10: Run `gh pr checks 10`") && ciText.includes("#20: Run `gh pr checks 20`"));
 const evalText = presetText(DEFAULT_PRESETS.find((x) => x.kind === "feedback-evaluate")!, vars([10, 20]));
 assert.ok(evalText.includes("latest review comments on each") && evalText.includes(`#10 ${url(10)}\n#20 ${url(20)}`) && !evalText.includes("{"));
 
 // Command presets: /command, the PRs, then extra instructions.
 const cr: Preset = { id: "x", kind: "review", label: "CR", command: "code-review", prompt: "Focus on {pr}'s data migrations." };
-assert.equal(presetText(cr, vars([20]), scopeText(p, [20])), `/code-review ${url(20)}\n\nFocus on #20's data migrations.`);
-assert.equal(presetText({ ...cr, prompt: "" }, vars([10, 20]), scopeText(p, [10, 20])), `/code-review ${scopeText(p, [10, 20])}`);
+assert.equal(presetText(cr, vars([20]), scopeText([20])), `/code-review #20\n\nFocus on #20's data migrations.`);
+assert.equal(presetText({ ...cr, prompt: "" }, vars([10, 20]), scopeText([10, 20])), "/code-review these PRs as a stack, bottom to top: #10 #20");
+
+// Argument hints: choices, flags and a target slot, in the hint's order; what fits no control goes to the free text.
+const hint = "[low|medium|high|xhigh|max|ultra] [--fix] [--comment] [<pr#>|<branch>|<path>]";
+const spec = parseHint(hint);
+assert.deepEqual(spec, {
+  parts: [
+    { kind: "choice", key: "low|medium|high|xhigh|max|ultra", options: ["low", "medium", "high", "xhigh", "max", "ultra"], required: false },
+    { kind: "flag", key: "--fix" },
+    { kind: "flag", key: "--comment" },
+    { kind: "target", accepts: ["pr#", "branch", "path"], required: false },
+  ],
+  extra: "",
+});
+assert.deepEqual(parseHint(""), { parts: [], extra: "" });
+assert.deepEqual(parseHint("add|remove <pr> [--dry-run] [--model <m>] <file> NAME [<notes>...]"), {
+  parts: [
+    { kind: "choice", key: "add|remove", options: ["add", "remove"], required: true },
+    { kind: "target", accepts: ["pr"], required: true },
+    { kind: "flag", key: "--dry-run" },
+    { kind: "text", key: "<file>", required: true },
+    { kind: "text", key: "NAME", required: true },
+  ],
+  extra: "[--model <m>] [<notes>...]",
+});
+assert.deepEqual(parseHint("[<branch>]").parts, [{ kind: "target", accepts: ["branch"], required: false }]);
+
+// Composing over a stack of 101..104 (heads alice/a..d), for each scope.
+const heads = [101, 102, 103, 104].map((number, i) => ({ number, title: "", head: `alice/${"abcd"[i]}`, base: i ? `alice/${"abcd"[i - 1]}` : "main" }));
+const compose = (prs: number[], values = {}, s = spec, stackPrs = heads) => commandArgs("code-review", s, values, stackPrs, prs);
+const hc = { "low|medium|high|xhigh|max|ultra": "high", "--comment": true, "--fix": false };
+assert.deepEqual(compose([102], hc), { args: "high --comment 102", target: "102", note: undefined });
+// A range from the bottom is its top branch, which diffs against trunk.
+assert.deepEqual(compose([101, 102, 103], hc), { args: "high --comment alice/c", target: "alice/c", note: undefined });
+assert.equal(compose([101, 102, 103, 104]).args, "alice/d");
+// Anything else can't be one target: the topmost PR, with a note.
+assert.deepEqual(compose([102, 103], hc), { args: "high --comment 103", target: "103", note: "/code-review takes one target; using #103" });
+assert.equal(compose([101, 103]).note, "/code-review takes one target; using #103");
+// No branch known (the stack hasn't loaded): the number, noted.
+assert.equal(compose([101, 102], {}, spec, []).args, "102");
+// A slot that takes a PR but no branch: the topmost PR even for a range from the bottom.
+assert.deepEqual(compose([101, 102], {}, parseHint("[<pr#>]")), { args: "102", target: "102", note: "/code-review takes one target; using #102" });
+// A branch-only slot takes one PR's branch too.
+assert.equal(compose([102], {}, parseHint("[<branch>]")).args, "alice/b");
+// A slot that takes neither is free text; the extra box always goes last.
+assert.deepEqual(compose([102], { "<path>": "src", extra: "be brief" }, parseHint("[<path>] [--fix]")), { args: "src be brief", target: undefined, note: undefined });
+// No hint: the PRs in scope as numbers, then the free text.
+assert.equal(compose([102], { extra: "focus on auth" }, parseHint("")).args, "#102 focus on auth");
+assert.equal(compose([101, 102], {}, parseHint(undefined)).args, "these PRs as a stack, bottom to top: #101 #102");
+// A saved favorite ("/code-review high --comment") fills the same way.
+const fav: Preset = { id: "f", kind: "review", label: "Strict", command: "code-review", prompt: "", args: hc };
+assert.equal(presetText(fav, vars([104]), compose([104], fav.args).args), "/code-review high --comment 104");
 
 // Menus: hidden out, favorites first, then order, then as listed.
 const item = (id: string, extra: Partial<Preset> = {}): Preset => ({ id, kind: "review", label: id, prompt: "x", ...extra });
@@ -79,7 +133,7 @@ assert.deepEqual(
 );
 // Discovered commands take their override (keyed provider:name): renamed, favorited, hidden.
 const found = { name: "code-review", description: "Review the diff", provider: "claude" };
-assert.deepEqual(commandPreset(found, "review", {}), { id: "claude:code-review", kind: "review", label: "/code-review", command: "code-review", provider: "claude", prompt: "", description: "Review the diff" });
+assert.deepEqual(commandPreset({ ...found, argumentHint: "[--fix]" }, "review", {}), { id: "claude:code-review", kind: "review", label: "/code-review", command: "code-review", provider: "claude", prompt: "", description: "Review the diff", argumentHint: "[--fix]" });
 const renamed = commandPreset(found, "review", { "claude:code-review": { label: "Deep review", favorite: true, prompt: "be strict" }, "codex:code-review": { hidden: true } });
 assert.ok(renamed.label === "Deep review" && renamed.favorite && renamed.command === "code-review" && renamed.provider === "claude");
 assert.equal(arrange([commandPreset({ ...found, provider: "codex" }, "review", { "codex:code-review": { hidden: true } })]).length, 0);
