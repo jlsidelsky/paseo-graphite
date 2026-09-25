@@ -77,7 +77,7 @@ export function alertFor(prev: AgentState | undefined, next: AgentState): Alert 
   return null;
 }
 
-export type Ticket = { id: string; url: string; title?: string; branch?: string };
+export type Ticket = { id: string; url: string; title?: string; branch?: string; description?: string };
 
 export function parseTicket(url: string | undefined): Ticket | null {
   const m = url?.match(/^https:\/\/linear\.app\/[^/]+\/issue\/([a-z][a-z0-9]*-\d+)(?:\/[^/?#]*)?/i);

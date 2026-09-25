@@ -508,8 +508,9 @@ async function openNewForm() {
   prompt.placeholder = "First message for the new session";
   selectAgent(null);
   const text = pr ? `PR #${pr.number}: https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}\n\n` : ticket ? await ticketPrefill(ticket) : "";
-  if (text && isCreating() && !prompt.value.trim()) {
-    prompt.value = prefill = text;
+  // A leftover draft stays, below the PR/ticket context.
+  if (text && isCreating() && !prompt.value.includes(text.trim())) {
+    prompt.value = prefill = prompt.value.trim() ? `${text}${prompt.value}` : text;
     prompt.focus();
     prompt.setSelectionRange(prompt.value.length, prompt.value.length);
   }
@@ -584,7 +585,8 @@ function recentRoots() {
 async function ticketPrefill(t: Ticket) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const title = t.title || (parseTicket(tab?.url)?.id === t.id ? ticketTitle(tab?.title, t.id) : "");
-  return `Work on ${t.id}${title ? `: ${title}` : ""}\n${t.url}\n\n`;
+  const body = t.description?.trim() ? `${t.description.trim()}\n\n` : "";
+  return `Work on Linear ticket ${t.id}${title ? `: ${title}` : ""}\n${t.url}\n\n${body}`;
 }
 
 function closeNewForm() {
@@ -879,8 +881,11 @@ async function takeStart() {
   const t = parseTicket(tab?.url);
   if (!t || t.id !== start.id?.toUpperCase()) return;
   const title = typeof start.title === "string" ? ticketTitle(start.title, t.id) : undefined;
-  await switchTo(null, { ...t, title, branch: typeof start.branch === "string" ? start.branch : undefined }, true);
-  if (!isCreating()) await openNewForm();
+  const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+  await switchTo(null, { ...t, title, branch: str(start.branch), description: str(start.description) }, true);
+  // Reopen so a second click refreshes the prefill.
+  if (isCreating()) closeNewForm();
+  await openNewForm();
 }
 chrome.storage.session.onChanged.addListener(async (changes) => {
   if (changes[await draftKey]?.newValue) void takeDraft();
