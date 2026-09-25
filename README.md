@@ -28,6 +28,8 @@ On a Linear issue, **▶ Paseo** next to the issue's copy-link buttons opens the
 
 When a session on a PR you have open finishes a turn or needs you, the tab gets a dot on its favicon and title, and Chrome shows a notification that opens the panel on that PR. Both can be turned off under ⚙ in the panel.
 
+When a PR with Paseo sessions goes from passing or pending checks to failing (as Paseo's GitHub data for its workspace reports them), you get the same dot and a notification whose **Fix CI** button opens the panel on that PR, pinned, with the Fix CI menu open: pick a preset, then a session or ＋ New. It works without a tab on the PR. The panel's actions bar shows the PR's CI state (passing, pending, failing). Turn it off under ⚙ in the panel or on the options page.
+
 ## Setup
 
 Needs Node, Chrome and the Paseo desktop app, with its daemon on the default `127.0.0.1:6767`.

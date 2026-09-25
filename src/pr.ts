@@ -84,7 +84,7 @@ export async function stackOf(daemon: DaemonClient, cwd: string, target: Pr): Pr
 }
 
 // chrome.storage.sync keys and their defaults.
-export const SETTINGS = { notify: true, markTab: true };
+export const SETTINGS = { notify: true, markTab: true, ciAlerts: true };
 
 export type Alert = "done" | "needs-you";
 
@@ -97,6 +97,13 @@ export function alertFor(prev: AgentState | undefined, next: AgentState): Alert 
   if (prev.status === "running" && next.status !== "running") return "done";
   return null;
 }
+
+export type GhPr = NonNullable<NonNullable<Workspace["githubRuntime"]>["pullRequest"]>;
+type CiState = Pick<GhPr, "number" | "checksStatus"> | null | undefined;
+
+// A workspace's PR going from passing, pending or no checks yet to failing. First sight and a switch to another PR don't count.
+export const ciAlertFor = (prev: CiState, next: CiState) =>
+  !!prev?.checksStatus && prev.checksStatus !== "failure" && next?.checksStatus === "failure" && prev.number === next.number;
 
 export type Ticket = { id: string; url: string; title?: string; branch?: string; description?: string };
 

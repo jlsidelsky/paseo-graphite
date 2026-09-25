@@ -31,6 +31,8 @@
     .menu-note { color: var(--muted); padding: 4px 6px; font-size: 12px; }
     #actions .sep { width: 1px; background: var(--border); margin: 2px 0; }
     #scope-btn:disabled { opacity: .7; }
+    #ci-state { margin-left: auto; align-self: center; font-size: 11px; color: var(--muted); white-space: nowrap; }
+    #ci-state.failure { color: #d33; } #ci-state.pending { color: #d98a00; } #ci-state.success { color: #2a9d3f; }
     .scope { display: flex; flex-direction: column; gap: 1px; padding-top: 2px; border-top: 1px solid var(--border); margin-top: 2px; }
     .scope .primary { align-self: flex-end; margin: 4px 6px 2px; font-size: 12px; background: var(--accent); border-color: var(--accent); color: #fff; }
     .scope label { display: flex; gap: 6px; align-items: center; padding: 1px 6px; font-size: 12px; cursor: pointer; }
@@ -159,6 +161,7 @@
   <div id="settings" hidden>
     <label><input type="checkbox" name="notify" /> Notify when a session finishes or needs you</label>
     <label><input type="checkbox" name="markTab" /> Mark the tab</label>
+    <label><input type="checkbox" name="ciAlerts" /> Alert when CI starts failing on a PR with sessions</label>
     <button id="customize-btn" class="menu-link">Customize prompts…</button>
   </div>
   <div id="actions" hidden>
@@ -167,6 +170,7 @@
     <button id="review-btn" title="Review this PR or its stack">Review ▾</button>
     <button id="fix-ci-btn">Fix CI ▾</button>
     <button id="feedback-btn" title="Evaluate or address review feedback">Feedback ▾</button>
+    <span id="ci-state" hidden></span>
     <div id="menu" hidden></div>
   </div>
   <div id="status"><span id="status-text">Connecting…</span><a id="go-to" href="#" hidden></a><a id="open-in-paseo" href="#" hidden>Open in Paseo</a></div>

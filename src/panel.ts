@@ -86,6 +86,7 @@ const menuBox = $<HTMLDivElement>("menu");
 const scopeBtn = $<HTMLButtonElement>("scope-btn");
 const reviewBtn = $<HTMLButtonElement>("review-btn");
 const fixCiBtn = $<HTMLButtonElement>("fix-ci-btn");
+const ciState = $<HTMLSpanElement>("ci-state");
 const feedbackBtn = $<HTMLButtonElement>("feedback-btn");
 const search = $<HTMLInputElement>("search");
 
@@ -120,6 +121,7 @@ let refetchTimer: ReturnType<typeof setTimeout> | undefined;
 let images: { data: string; mimeType: string }[] = [];
 let prefill = "";
 let agentsLive: Promise<unknown> | undefined;
+let workspacesLive: Promise<unknown> | undefined;
 let allTimer: ReturnType<typeof setTimeout> | undefined;
 let lastStatus = "";
 // The active tab's inbox rows (Graphite inbox, GitHub PR list), shown instead of all sessions; empty elsewhere.
@@ -916,6 +918,12 @@ function updateFixCi() {
   const passing = scopePrs().every((n) => ghPr(n)?.checksStatus === "success");
   fixCiBtn.disabled = passing;
   fixCiBtn.title = passing ? "All checks pass" : "Ask a session to fix the failing checks";
+  // This PR's checks, whatever the scope.
+  const status = workspaces.filter(isPrWorkspace).map((w) => w.githubRuntime?.pullRequest?.checksStatus).find((s) => s && s !== "none") ?? "none";
+  const label = { success: "passing", pending: "pending", failure: "failing", none: "" }[status];
+  ciState.hidden = !label;
+  ciState.className = status;
+  ciState.textContent = `CI ${label}`;
 }
 
 function renderScope() {
@@ -1067,11 +1075,12 @@ reviewBtn.onclick = () =>
   });
 
 // One CI preset runs straight away; several get a menu.
-fixCiBtn.onclick = async () => {
+async function openFixCi() {
   const ci = arrange((await loadPresets()).presets.filter((x) => x.kind === "ci"));
   // Always a menu, so every preset offers the composer or a new session.
   void openMenu(fixCiBtn, async () => presetMenu(fixCiBtn, ci.length ? ci : DEFAULT_PRESETS.filter((x) => x.kind === "ci"), []));
-};
+}
+fixCiBtn.onclick = openFixCi;
 
 feedbackBtn.onclick = () =>
   void openMenu(feedbackBtn, async () => {
@@ -1353,14 +1362,17 @@ async function takeStart() {
   if (isCreating()) closeNewForm();
   await openNewForm();
 }
-// An inbox pill (ext/inbox.js → background "open-pr"): switch to that PR, pinned. A request the panel was too late for is dropped.
+// An inbox pill (ext/inbox.js → background "open-pr") or a CI alert: switch to that PR, pinned, and for the alert's Fix CI open its menu.
+// A request the panel was too late for is dropped.
 async function takeOpen() {
   const key = await openKey;
-  const open = (await chrome.storage.session.get<Record<string, { url?: string; at?: number }>>(key))[key];
+  const open = (await chrome.storage.session.get<Record<string, { url?: string; at?: number; fixCi?: boolean }>>(key))[key];
   if (!open) return;
   await chrome.storage.session.remove(key);
   const p = parsePr(open.url);
-  if (p && Date.now() - (open.at ?? 0) < 60_000) await openPr(p, open.url);
+  if (!p || Date.now() - (open.at ?? 0) >= 60_000) return;
+  await openPr(p, open.url);
+  if (open.fixCi) await openFixCi();
 }
 chrome.storage.session.onChanged.addListener(async (changes) => {
   if (changes[await openKey]?.newValue && connected()) void takeOpen();
@@ -1375,6 +1387,15 @@ void chrome.storage.sync.get<Record<string, boolean>>(SETTINGS).then((saved) => 
     input.checked = saved[input.name];
     input.onchange = () => void chrome.storage.sync.set({ [input.name]: input.checked });
   }
+});
+
+// Checks change without the sessions changing: keep the CI state and Fix CI current.
+paseo.workspaces.subscribe((update) => {
+  if (update.kind !== "upsert") return;
+  const i = workspaces.findIndex((w) => w.id === update.workspace.id);
+  if (i < 0) return;
+  workspaces[i] = update.workspace;
+  if (pr) updateFixCi();
 });
 
 // Relabel picker options in place so the running dots stay live without touching the selection or timeline.
@@ -1410,6 +1431,7 @@ daemon.subscribeConnectionStatus((s) => {
     void syncActiveTab(true).then(takeStart).then(takeOpen);
     // The daemon only sends agent updates once asked; the subscription re-subscribes after reconnects by itself.
     agentsLive ??= paseo.agents.list({ subscribe: {} }).catch(() => (agentsLive = undefined));
+    workspacesLive ??= paseo.workspaces.list({ subscribe: {} }).catch(() => (workspacesLive = undefined));
   }
   if (s.status === "disconnected")
     setStatus(
