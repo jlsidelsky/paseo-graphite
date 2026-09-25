@@ -37,29 +37,50 @@ export function agentsOnPr(workspaces: Workspace[], agents: Agent[], target: Pr)
 
 export type StackPr = { number: number; title: string };
 
+type Linked = { number: number; baseRefName?: string; headRefName?: string };
+
+// Bottom to top, grouped by head branch: PRs sharing a head sit together, a branch comes after the one it's based on,
+// and the bottom is the branch whose base isn't another stack PR's head. Ties go by PR number; each PR appears once.
+export function orderStack<T extends Linked>(items: T[]): T[] {
+  const prs = [...new Map(items.map((i) => [i.number, i])).values()].sort((a, b) => a.number - b.number);
+  const head = (i: T) => i.headRefName ?? `#${i.number}`;
+  const heads = [...new Set(prs.map(head))];
+  const on = (h: string) => prs.filter((i) => head(i) === h);
+  const isRoot = (h: string) => !on(h).some((i) => i.baseRefName && i.baseRefName !== h && heads.includes(i.baseRefName));
+  const out: T[] = [];
+  const seen = new Set<string>();
+  const visit = (h: string) => {
+    if (seen.has(h)) return;
+    seen.add(h);
+    out.push(...on(h));
+    for (const c of heads) if (on(c).some((i) => i.baseRefName === h)) visit(c);
+  };
+  heads.filter(isRoot).forEach(visit);
+  // A cycle has no root; start it from its lowest PR.
+  heads.forEach(visit);
+  return out;
+}
+
 // Walks GitHub base/head branches: parents down to the trunk, children up to the tips. ~0.5s per search.
 export async function stackOf(daemon: DaemonClient, cwd: string, target: Pr): Promise<StackPr[]> {
-  type Item = { number: number; title: string; state: string; baseRefName?: string; headRefName?: string };
+  type Item = Linked & { title: string; state: string };
   const search = async (query: string) =>
     ((await daemon.searchForge({ cwd, query, limit: 10, kinds: ["pr"] })).items as Item[]).filter((i) => i.state === "OPEN");
   const self = (await search(String(target.number))).find((i) => i.number === target.number);
   if (!self?.headRefName) return [];
-  const below: Item[] = [];
-  for (let base = self.baseRefName; base && below.length < 15; ) {
-    const parent = (await search(`head:${base} is:open`)).find((i) => i.headRefName === base);
-    if (!parent) break;
-    below.unshift(parent);
-    base = parent.baseRefName;
-  }
-  const above: Item[] = [];
-  for (const heads = [self.headRefName]; heads.length && above.length < 15; ) {
-    const head = heads.shift()!;
-    for (const child of (await search(`base:${head} is:open`)).filter((i) => i.baseRefName === head)) {
-      above.push(child);
-      if (child.headRefName) heads.push(child.headRefName);
+  const found = new Map([[self.number, self]]);
+  // Every PR on a linked branch, not just the first the search returns: two PRs can share a head.
+  const walk = async (start: string | undefined, query: (b: string) => string, linked: (i: Item, b: string) => boolean, next: (i: Item) => string | undefined) => {
+    for (const todo = [start], seen = new Set<string>(); todo.length && found.size < 30; ) {
+      const b = todo.shift();
+      if (!b || seen.has(b)) continue;
+      seen.add(b);
+      for (const i of (await search(query(b))).filter((i) => linked(i, b) && !found.has(i.number))) found.set(i.number, i), todo.push(next(i));
     }
-  }
-  return [...below, self, ...above].map(({ number, title }) => ({ number, title }));
+  };
+  await walk(self.baseRefName, (b) => `head:${b} is:open`, (i, b) => i.headRefName === b, (i) => i.baseRefName);
+  await walk(self.headRefName, (b) => `base:${b} is:open`, (i, b) => i.baseRefName === b, (i) => i.headRefName);
+  return orderStack([...found.values()]).map(({ number, title }) => ({ number, title }));
 }
 
 // chrome.storage.sync keys and their defaults.
