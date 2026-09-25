@@ -122,3 +122,9 @@ export async function listSessions(paseo: Paseo) {
   const [ws, ag] = await Promise.all([paseo.workspaces.list(), paseo.agents.list({ filter: { includeArchived: true } })]);
   return { workspaces: ws.entries, all: ag.entries.map((e) => e.agent) };
 }
+
+// An inbox row's PR: its title link, else the "author · owner/repo #n" line under it (which may go on with labels or a "1/4" stack position).
+export function rowPr(href: string | undefined, text: string | undefined): Pr | null {
+  const m = text?.match(/(?:^|[\s·])([\w.-]+)\/([\w.-]+)\s+#(\d+)(?!\d)/);
+  return parsePr(href) ?? (m ? { owner: m[1].toLowerCase(), repo: m[2].toLowerCase(), number: Number(m[3]) } : null);
+}

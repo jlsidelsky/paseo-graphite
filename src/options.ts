@@ -1,4 +1,5 @@
 import { DEFAULT_PRESETS, PRESET_KINDS, type Preset } from "./actions";
+import { fillSettings, inboxStyles, loadInboxSettings, orderSections } from "./inbox-view";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const list = $<HTMLDivElement>("list");
@@ -51,3 +52,9 @@ $("save").onclick = async () => {
 };
 
 void chrome.storage.sync.get({ presets: DEFAULT_PRESETS }).then((r) => render(Array.isArray(r.presets) ? r.presets : DEFAULT_PRESETS));
+
+// Inbox: section names come from the last inbox the panel saw.
+void Promise.all([loadInboxSettings(), chrome.storage.local.get("inboxSections")]).then(([s, { inboxSections }]) => {
+  inboxStyles();
+  fillSettings($("inbox-options"), orderSections(Array.isArray(inboxSections) ? inboxSections : [], s), s);
+});
