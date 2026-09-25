@@ -63,9 +63,21 @@
       ],
       "js": [
         "content.js",
-        "review.js",
-        "inbox.js"
+        "review.js"
       ]
+    },
+    {
+      "matches": [
+        "https://graphite.com/*",
+        "https://*.graphite.com/*",
+        "https://graphite.dev/*",
+        "https://*.graphite.dev/*",
+        "https://github.com/*"
+      ],
+      "js": [
+        "inbox.js"
+      ],
+      "run_at": "document_start"
     },
     {
       "matches": [

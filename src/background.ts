@@ -133,7 +133,7 @@ function cached<T>(cache: Map<string, { at: number; p: Promise<T> }>, key: strin
   return p;
 }
 
-// Rows as ext/inbox.js sends them; `stacks[].rows` index into them.
+// Inbox rows (from ext/inbox.js) as the panel sends them; `stacks[].rows` index into them.
 async function inboxStacks(raw: { href?: string; sub?: string; title?: string; section?: string }[]) {
   if (!(await ready()) || !(await workspacesLive)) return null;
   const started = Date.now();
