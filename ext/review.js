@@ -66,7 +66,9 @@
   const BTN = "data-paseo-send";
 
   // intent "evaluate" / "address" has the panel wrap a comment in that prompt; none quotes it as is.
-  const send = (text, intent) => chrome.runtime.sendMessage({ type: "to-paseo", text, intent }).catch(() => {});
+  // Shift-click (fresh) opens the panel's new-session form with it instead of filling the selected session's composer.
+  const send = (text, intent, fresh = false) => chrome.runtime.sendMessage({ type: "to-paseo", text, intent, fresh }).catch(() => {});
+  const SHIFT_HINT = " (⇧-click: in a new session)";
 
   const rowOf = (node) => {
     for (let n = node; n?.parentElement; n = n.parentElement) if (n.parentElement.matches(dom.DIFF_LINES)) return n;
@@ -132,8 +134,8 @@
         ["Address", "Ask a Paseo session to address this comment", "address"],
         ["Insert", "Quote this comment in the Paseo composer", undefined],
       ]) {
-        const b = button(label, style, text);
-        b.onclick = () => send(commentText(body), intent);
+        const b = button(label + SHIFT_HINT, style, text);
+        b.onclick = (e) => send(commentText(body), intent, e.shiftKey);
         group.append(b);
       }
       body.after(group);
@@ -158,12 +160,12 @@
     const text = selectionText(sel);
     const rect = sel.getRangeAt(0).getBoundingClientRect();
     floating = button(
-      "Send selected lines to Paseo",
+      "Send selected lines to Paseo" + SHIFT_HINT,
       `position:fixed;z-index:2147483647;left:${Math.min(rect.right, innerWidth - 90)}px;top:${Math.min(rect.bottom + 6, innerHeight - 30)}px;` +
         "background:#1f2023;color:#e8e8ea;border:1px solid #3a3b40;box-shadow:0 2px 8px rgba(0,0,0,.3);",
     );
     floating.onmousedown = (e) => e.preventDefault();
-    floating.onclick = () => (send(text), floating?.remove(), (floating = null));
+    floating.onclick = (e) => (send(text, undefined, e.shiftKey), floating?.remove(), (floating = null));
     document.body.append(floating);
   }
   const ours = (e) => e.target instanceof Element && !!e.target.closest(`[${BTN}]`);

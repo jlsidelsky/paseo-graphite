@@ -5,7 +5,8 @@
   "scripts": {
     "build": "esbuild src/panel.ts src/background.ts src/options.ts --bundle --format=esm --platform=browser --target=chrome120 --conditions=node --minify --outdir=ext",
     "watch": "npm run build -- --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check": "for f in scripts/*.check.ts scripts/check-*.mjs; do node \"$f\" || exit 1; done"
   },
   "dependencies": {
     "@getpaseo/client": "^0.9.1",

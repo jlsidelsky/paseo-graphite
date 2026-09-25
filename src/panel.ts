@@ -27,7 +27,7 @@ import {
 } from "./actions";
 import { argControls, readArgs } from "./args-form";
 import { diffStrings, parseUnifiedDiff, type DiffLine } from "./diff";
-import { groupInbox, INBOX_DEFAULTS, loadInboxSettings, pageSections, renderInbox, type InboxRow } from "./inbox-view";
+import { groupInbox, INBOX_DEFAULTS, loadInboxSettings, matches, pageSections, renderInbox, type InboxRow } from "./inbox-view";
 import { isAnswered, parseQuestions, questionResponse, showsText, type Question } from "./question";
 import {
   agentsOnPr,
@@ -87,6 +87,7 @@ const scopeBtn = $<HTMLButtonElement>("scope-btn");
 const reviewBtn = $<HTMLButtonElement>("review-btn");
 const fixCiBtn = $<HTMLButtonElement>("fix-ci-btn");
 const feedbackBtn = $<HTMLButtonElement>("feedback-btn");
+const search = $<HTMLInputElement>("search");
 
 const daemon = new DaemonClient({ url: DAEMON_URL, clientId: "paseo-graphite", clientType: "browser" });
 const paseo = createPaseoApi(daemon);
@@ -229,8 +230,8 @@ function renderPicker() {
   if (keep !== selectedId || !unsubscribeTimeline) selectAgent(keep);
 }
 
-const groups = () => {
-  const g = groupAll(agents);
+const groups = (list = agents) => {
+  const g = groupAll(list);
   return [["Needs you", g.needs], ["Running", g.running], ["Recently finished", g.finished]] as const;
 };
 
@@ -255,14 +256,24 @@ function renderAll() {
   if (keep !== selectedId || !unsubscribeTimeline) selectAgent(keep);
 }
 
+// What the search field looks in besides the session's title (and, in the Inbox, its PR's number and title).
+function searchFields(a: PaseoAgent) {
+  const w = workspaces.find((x) => x.id === a.workspaceId);
+  return [a.title, whereOf(a), w?.gitRuntime?.currentBranch, w?.githubRuntime?.pullRequest?.headRefName, w?.githubRuntime?.pullRequest?.title];
+}
+
 function overview() {
   const row = (a: PaseoAgent) => {
     const btn = el("button", { className: "session-row" }, el("b", { textContent: a.title ?? a.id.slice(0, 8) }), el("span", { textContent: [whereOf(a), a.status].filter(Boolean).join(" · ") }));
     btn.onclick = () => ((agentSelect.value = a.id), selectAgent(a.id));
     return btn;
   };
-  const nodes = groups().flatMap(([label, list]) => (list.length ? [el("h4", { textContent: label }), ...list.map(row)] : []));
-  return nodes.length ? el("div", { className: "overview" }, ...nodes) : el("div", { className: "empty", textContent: "No Paseo sessions yet." });
+  // Filtered before grouping, so a search reaches past the recently finished cap.
+  const found = agents.filter((a) => matches(search.value, searchFields(a)));
+  const nodes = groups(found).flatMap(([label, list]) => (list.length ? [el("h4", { textContent: label }), ...list.map(row)] : []));
+  return nodes.length
+    ? el("div", { className: "overview" }, ...nodes)
+    : el("div", { className: "empty", textContent: search.value.trim() ? "No sessions match this search." : "No Paseo sessions yet." });
 }
 
 function selectAgent(id: string | null) {
@@ -278,6 +289,7 @@ function selectAgent(id: string | null) {
   document.body.classList.toggle("archived", !!listed().find((a) => a.id === id)?.archivedAt);
   timeline.replaceChildren();
   openInPaseo.hidden = !id;
+  search.hidden = !!(id || pr || ticket);
   if (!id) {
     setStatus(viewName());
     if (isCreating()) return;
@@ -923,10 +935,10 @@ function renderScope() {
   updateFixCi();
 }
 
-async function commentPrompt(intent: "evaluate" | "address", comment: string) {
+async function commentPrompt(intent: "evaluate" | "address", comment: string, fresh: boolean) {
   const [store, found] = await Promise.all([loadPresets(), discover()]);
   // A skill only helps if the session it's sent to has it; with no session chosen yet, ＋ New preselects its provider.
-  const target = isCreating() ? undefined : listed().find((a) => a.id === selectedId)?.provider;
+  const target = fresh || isCreating() ? undefined : listed().find((a) => a.id === selectedId)?.provider;
   const x = feedbackPreset(`feedback-${intent}`, store, found.filter((c) => !target || c.provider === target));
   const vars = pr ? { pr: `#${pr.number}`, url: prUrl(pr), prs: prLines(pr, [pr.number]), comment } : { comment };
   if (pr) newDefaults = newDefaultsFor(x, [pr.number]);
@@ -1137,7 +1149,7 @@ const inboxList = () =>
     },
     open: (p) => void openPr(p),
     toggle: (key, open) => void toggleStack(key, open),
-  }, currentStacks(), expandedStacks);
+  }, currentStacks(), expandedStacks, { q: search.value, fields: searchFields });
 
 const rowKey = (r: InboxRow) => `${r.section}\n${prLabel(r.pr)}`;
 function currentStacks(): RowStack[] {
@@ -1216,6 +1228,13 @@ timeline.onclick = (e) => {
   if (/^https?:/.test(link.href)) void chrome.tabs.create({ url: link.href });
 };
 agentSelect.onchange = () => selectAgent(agentSelect.value || null);
+search.oninput = () => selectAgent(null);
+search.onkeydown = (e) => {
+  if (e.key !== "Escape" || !search.value) return;
+  e.preventDefault();
+  search.value = "";
+  selectAgent(null);
+};
 newBtn.onclick = () => (isCreating() ? (closeNewForm(), void loadSessions()) : void openNewForm());
 sendBtn.onclick = () => void send();
 sessionMode.onchange = async () => {
@@ -1305,14 +1324,18 @@ const windowId = chrome.windows.getCurrent().then((w) => w.id);
 const draftKey = windowId.then((id) => `draft:${id}`);
 const startKey = windowId.then((id) => `start:${id}`);
 const openKey = windowId.then((id) => `open:${id}`);
-// ext/review.js hands over comments and diff lines; `intent` asks to evaluate or address a comment instead of just quoting it.
+// ext/review.js hands over comments and diff lines; `intent` asks to evaluate or address a comment instead of just quoting it,
+// `fresh` (shift-click) to start a new session with it, like the actions bar's New session.
 async function takeDraft() {
   const key = await draftKey;
   const drafts = (await chrome.storage.session.get(key))[key];
   if (!Array.isArray(drafts) || !drafts.length) return;
   await chrome.storage.session.remove(key);
-  for (const { text, intent } of drafts as { text: string; intent?: "evaluate" | "address" }[])
-    fillComposer(intent ? await commentPrompt(intent, text) : text);
+  for (const { text, intent, fresh } of drafts as { text: string; intent?: "evaluate" | "address"; fresh?: boolean }[]) {
+    const full = intent ? await commentPrompt(intent, text, !!fresh) : text;
+    if (fresh) act(full, newDefaults, true);
+    else fillComposer(full);
+  }
 }
 // The Linear page's ▶ Paseo button: switch to that ticket, even when pinned elsewhere, and open its new-session form.
 async function takeStart() {

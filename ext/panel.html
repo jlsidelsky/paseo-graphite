@@ -53,6 +53,9 @@
     #settings .menu-link { padding: 0; }
     #status { padding: 4px 10px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; }
     #status a { color: var(--accent); }
+    #search { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; margin: 8px 10px 0; }
+    #search:focus { outline: none; border-color: var(--accent); }
+    #search[hidden], body.creating #search { display: none; }
     #timeline { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
     .msg { white-space: pre-wrap; word-wrap: break-word; }
     .md { white-space: normal; }
@@ -167,6 +170,7 @@
     <div id="menu" hidden></div>
   </div>
   <div id="status"><span id="status-text">Connecting…</span><a id="go-to" href="#" hidden></a><a id="open-in-paseo" href="#" hidden>Open in Paseo</a></div>
+  <input id="search" type="search" placeholder="Filter by title, #PR, ticket or branch" aria-label="Filter sessions" hidden />
   <div id="timeline"></div>
   <footer>
     <div id="suggest" hidden></div>

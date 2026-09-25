@@ -1,6 +1,6 @@
 // node scripts/inbox.check.ts
 import assert from "node:assert/strict";
-import { groupInbox, INBOX_DEFAULTS, orderSections, type InboxRow } from "../src/inbox-view.ts";
+import { groupInbox, INBOX_DEFAULTS, matches, orderSections, type InboxRow } from "../src/inbox-view.ts";
 import { groupStacks, rowAuthor, rowPr, type StackRow } from "../src/pr.ts";
 
 // Row → PR: the title link first, in either Graphite form or GitHub's, else the subtitle line.
@@ -71,4 +71,18 @@ const st = [{ key: "k", rows: [3, 1] }];
 const sview = (o: object) => groupInbox(srows, of, { ...INBOX_DEFAULTS, ...o }, st)[0].prs.map((p) => [p.row.pr.number, p.stack?.pos ?? null]);
 assert.deepEqual(sview({}), [[10, null], [13, 0], [11, 1], [12, null]]);
 assert.deepEqual(sview({ groupStacks: false }), [[10, null], [11, null], [12, null], [13, null]]);
+
+// Search: case-insensitive, each word somewhere in the fields; "#123" and "123" both find a PR number.
+const fields = ["Fix the Login flow", "ABC-12 · #123", "abc-12-fix-login", undefined, null];
+for (const q of ["", "  ", "login", "LOGIN", "#123", "123", "abc-12", "fix #123", "flow login"]) assert.ok(matches(q, fields), q);
+for (const q of ["#124", "logout", "fix logout"]) assert.ok(!matches(q, fields), q);
+// Inbox: a matching PR keeps all its sessions; otherwise only matching sessions keep it; other PRs and emptied sections drop.
+const fview = (q: string) =>
+  groupInbox(rows, of, INBOX_DEFAULTS, [], { q, fields: (a) => [a.id] }).map((g) => [g.section, g.prs.map((p) => [p.row.pr.number, ...p.sessions.map((a: { id: string }) => a.id)])]);
+assert.deepEqual(fview(""), view({}));
+assert.deepEqual(fview("pr 2"), [["Review", [[2, "asks", "idle2"]]]]);
+assert.deepEqual(fview("#5"), [["Mine", [[5, "idle5"]]]]);
+assert.deepEqual(fview("ASKS"), [["Review", [[2, "asks"]]]]);
+assert.deepEqual(fview("#2 idle"), [["Review", [[2, "idle2"]]]]);
+assert.deepEqual(fview("nothing"), []);
 console.log("inbox ok");

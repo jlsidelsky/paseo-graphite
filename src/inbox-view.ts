@@ -40,8 +40,16 @@ export function orderSections(names: string[], s: InboxSettings) {
   return [...names].sort((a, b) => at(a) - at(b));
 }
 
+// The search field: every word of `q` somewhere in `fields`, case-insensitive, so "123", "#123" and "#123 fix" all find PR #123 "Fix…".
+export function matches(q: string, fields: (string | null | undefined)[]) {
+  const hay = fields.filter(Boolean).join("\n").toLowerCase();
+  return q.toLowerCase().split(/\s+/).every((w) => hay.includes(w));
+}
+// A PR that matches keeps all its sessions; otherwise only the sessions that match (with the PR's fields) keep it listed.
+export type InboxFind = { q: string; fields: (a: Agent) => (string | null | undefined)[] };
+
 // `sessionsOf` gives a PR's sessions newest first (agentsOnPr); `stacks` index into `rows` (groupStacks).
-export function groupInbox(rows: InboxRow[], sessionsOf: (pr: Pr) => Agent[], s: InboxSettings, stacks: RowStack[] = []): InboxGroup[] {
+export function groupInbox(rows: InboxRow[], sessionsOf: (pr: Pr) => Agent[], s: InboxSettings, stacks: RowStack[] = [], find?: InboxFind): InboxGroup[] {
   const inStack = new Map(s.groupStacks ? stacks.flatMap((st) => st.rows.map((i, order) => [rows[i], { key: st.key, order }] as const)) : []);
   const gather = (prs: InboxGroup["prs"]) => {
     const done = new Set<string>();
@@ -61,7 +69,13 @@ export function groupInbox(rows: InboxRow[], sessionsOf: (pr: Pr) => Agent[], s:
       const prs = rows
         .filter((r) => r.section === section)
         .map((row) => ({ row, sessions: sessionsOf(row.pr).filter((a) => s.show[statusOf(a)]).sort((a, b) => RANK[statusOf(a)] - RANK[statusOf(b)]) }))
-        .filter((p) => !s.onlyWithSessions || p.sessions.length);
+        .filter((p) => !s.onlyWithSessions || p.sessions.length)
+        .flatMap((p) => {
+          const own = [`#${p.row.pr.number}`, p.row.title];
+          if (!find?.q.trim() || matches(find.q, own)) return [p];
+          const sessions = p.sessions.filter((a) => matches(find.q, [...own, ...find.fields(a)]));
+          return sessions.length ? [{ ...p, sessions }] : [];
+        });
       // Needs you, then running, then most recently active; PRs without sessions keep the page's order at the end.
       if (s.sort === "urgency") prs.sort((a, b) => rank(a) - rank(b) || (b.sessions[0]?.updatedAt ?? "").localeCompare(a.sessions[0]?.updatedAt ?? ""));
       return { section, prs: gather(prs) };
@@ -152,6 +166,7 @@ export function renderInbox(
   on: { pick: (a: Agent) => void; open: (pr: Pr) => void; toggle: (stack: string, open: boolean) => void },
   stacks: RowStack[] = [],
   expanded = new Set<string>(),
+  find?: InboxFind,
 ) {
   inboxStyles();
   if (!settings) {
@@ -177,7 +192,7 @@ export function renderInbox(
     pr.onclick = () => on.open(row.pr);
     return [pr, ...(sessions.length ? sessions.map(session) : [el("div", { className: "none", textContent: "No sessions" })])];
   };
-  const groups = groupInbox(rows, sessionsOf, s, stacks);
+  const groups = groupInbox(rows, sessionsOf, s, stacks, find);
   const nodes = groups.flatMap((g) => [
     el("h4", { textContent: `${g.section} · ${g.prs.length}` }),
     ...g.prs.flatMap((p) => {
@@ -197,6 +212,6 @@ export function renderInbox(
     "div",
     { className: "overview inbox" },
     el("div", { className: "inbox-head" }, el("h4", { textContent: "Inbox" }), settings.details),
-    ...(nodes.length ? nodes : [el("div", { className: "empty", textContent: "No inbox PRs match these settings." })]),
+    ...(nodes.length ? nodes : [el("div", { className: "empty", textContent: `No inbox PRs match ${find?.q.trim() ? "this search" : "these settings"}.` })]),
   );
 }

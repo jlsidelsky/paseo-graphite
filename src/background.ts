@@ -154,7 +154,7 @@ async function inboxStacks(raw: { href?: string; sub?: string; title?: string; s
 let drafting = Promise.resolve();
 
 // ext/review.js text for the panel's composer, per window; the panel takes it on load or on change.
-function queueDraft(windowId: number, draft: { text: string; intent?: string }) {
+function queueDraft(windowId: number, draft: { text: string; intent?: string; fresh: boolean }) {
   const key = `draft:${windowId}`;
   drafting = drafting
     .then(async () => {
@@ -222,7 +222,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.type === "to-paseo" && sender.tab && typeof msg.text === "string") {
     void chrome.sidePanel.open({ windowId: sender.tab.windowId });
     const intent = msg.intent === "evaluate" || msg.intent === "address" ? msg.intent : undefined;
-    queueDraft(sender.tab.windowId, { text: msg.text, intent });
+    queueDraft(sender.tab.windowId, { text: msg.text, intent, fresh: msg.fresh === true });
     return;
   }
   // From ext/linear.js; the panel reads the key, opens its new-session form for the ticket, and removes it.
