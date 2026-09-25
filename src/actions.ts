@@ -1,5 +1,5 @@
 // PR actions (Review, Fix CI, Feedback): prompt presets, their storage, placeholder filling, and which slash commands count.
-import type { Pr } from "./pr";
+import type { Pr, StackPr } from "./pr";
 
 export type PresetKind = "review" | "ci" | "feedback-evaluate" | "feedback-address";
 // "ask" opens the Choose PRs picker first. Unset: whatever the panel's scope control says.
@@ -19,6 +19,8 @@ export type Preset = {
   effort?: string;
   mode?: string;
   scope?: Scope;
+  // A command's argument values, as parseHint's controls key them.
+  args?: ArgValues;
   workspace?: WorkspacePref;
   favorite?: boolean;
   hidden?: boolean;
@@ -29,7 +31,7 @@ export type Override = Partial<Omit<Preset, "id" | "kind" | "command" | "provide
 export type Store = { presets: Preset[]; overrides: Record<string, Override> };
 export type Vars = Partial<Record<"pr" | "url" | "prs" | "comment" | "checks", string>>;
 export type Check = { name: string; status: string; url: string | null };
-type Command = { name: string; description?: string };
+type Command = { name: string; description?: string; argumentHint?: string };
 export type Found = Command & { provider: string };
 // The panel's last review and feedback commands per provider, in chrome.storage.local for the options page.
 export type DiscoveredCache = Record<string, { label: string; commands: (Command & { kind: "review" | "feedback" })[] }>;
@@ -123,7 +125,7 @@ export function arrange<T extends Preset>(items: T[]): T[] {
 export const commandKey = (c: Found) => `${c.provider}:${c.name}`;
 
 // A discovered command as a menu entry, with the user's rename, placement and defaults applied.
-export const commandPreset = (c: Found, kind: PresetKind, overrides: Record<string, Override>): Preset & { description?: string } => ({
+export const commandPreset = (c: Found, kind: PresetKind, overrides: Record<string, Override>): Preset & { description?: string; argumentHint?: string } => ({
   id: commandKey(c),
   kind,
   label: `/${c.name}`,
@@ -131,6 +133,7 @@ export const commandPreset = (c: Found, kind: PresetKind, overrides: Record<stri
   provider: c.provider,
   prompt: "",
   description: c.description,
+  argumentHint: c.argumentHint,
   ...overrides[commandKey(c)],
 });
 
@@ -149,9 +152,66 @@ export function presetText(p: Preset, vars: Vars, args = "") {
 export const prUrl = (p: Pr, n = p.number) => `https://github.com/${p.owner}/${p.repo}/pull/${n}`;
 export const prLines = (p: Pr, numbers: number[]) => numbers.map((n) => `#${n} ${prUrl(p, n)}`).join("\n");
 
-// The arguments after a slash command: one PR's URL, or the stack.
-export const scopeText = (p: Pr, numbers: number[]) =>
-  numbers.length === 1 ? prUrl(p, numbers[0]) : `these PRs as a stack, bottom to top:\n${prLines(p, numbers)}`;
+// The arguments after a slash command with no argument hint: PR numbers, never URLs.
+export const scopeText = (numbers: number[]) =>
+  numbers.length === 1 ? `#${numbers[0]}` : `these PRs as a stack, bottom to top: ${numbers.map((n) => `#${n}`).join(" ")}`;
+
+// ---- Argument hints, like "[low|high] [--fix] [<pr#>|<branch>]", as form controls. ----
+
+export type ArgValues = Record<string, string | boolean>;
+export type ArgPart =
+  | { kind: "choice"; key: string; options: string[]; required: boolean }
+  | { kind: "flag"; key: string }
+  | { kind: "target"; accepts: string[]; required: boolean }
+  | { kind: "text"; key: string; required: boolean };
+// `extra`: the parts of the hint that fit no control, shown as the free-text box's placeholder.
+export type ArgSpec = { parts: ArgPart[]; extra: string };
+
+const isPrAlt = (a: string) => /^pr\b|^#|number/i.test(a);
+const isBranchAlt = (a: string) => /branch/i.test(a);
+
+// ponytail: one level of brackets; a nested group like "[--model [x]]" lands in `extra`.
+export function parseHint(hint = ""): ArgSpec {
+  const parts: ArgPart[] = [];
+  const extra: string[] = [];
+  for (const [whole, inner, bare] of hint.matchAll(/\[([^\]]*)\]|(\S+)/g)) {
+    const body = (inner ?? bare).trim();
+    const alts = body.split("|").map((a) => a.trim());
+    const required = bare !== undefined;
+    if (/^--?[\w-]+$/.test(body) && !required) parts.push({ kind: "flag", key: body });
+    else if (alts.every((a) => /^<[^<>]+>$/.test(a))) {
+      const accepts = alts.map((a) => a.slice(1, -1));
+      parts.push(accepts.some((a) => isPrAlt(a) || isBranchAlt(a)) ? { kind: "target", accepts, required } : { kind: "text", key: body, required });
+    } else if (alts.every((a) => /^-{0,2}[\w.-]+$/.test(a)) && (alts.length > 1 || !required)) parts.push({ kind: "choice", key: body, options: alts, required });
+    else if (required && /^[\w.-]+$/.test(body)) parts.push({ kind: "text", key: body, required });
+    else extra.push(whole);
+  }
+  return { parts, extra: extra.join(" ") };
+}
+
+// The one value a target slot takes for the PRs in scope (bottom to top). A range from the stack's bottom is its top
+// branch, which diffs against trunk; any other set can't be one target, so it's the topmost PR, with a note saying so.
+export function targetFor(command: string, accepts: string[], stack: StackPr[], prs: number[]): { value: string; note?: string } {
+  const top = prs.at(-1)!;
+  const head = stack.find((s) => s.number === top)?.head;
+  const pr = accepts.some(isPrAlt);
+  const branch = !!head && accepts.some(isBranchAlt);
+  if (branch && (prs.length === 1 ? !pr : prs.every((n, i) => stack[i]?.number === n))) return { value: head };
+  const useNumber = pr || !branch;
+  const value = useNumber ? String(top) : head;
+  return prs.length > 1 ? { value, note: `/${command} takes one target; using ${useNumber ? `#${top}` : value}` } : { value };
+}
+
+// The arguments after `/command`, in the hint's order, the free text last. A command with no hint gets the PRs in scope
+// first, as numbers. `target`: what the scope resolved to, for the form to show.
+export function commandArgs(command: string, spec: ArgSpec, values: ArgValues, stack: StackPr[], prs: number[]) {
+  const slot = spec.parts.find((p) => p.kind === "target");
+  const t = slot ? targetFor(command, slot.accepts, stack, prs) : !spec.parts.length && !spec.extra ? { value: scopeText(prs) } : undefined;
+  const word = (v: string | boolean | undefined) => (typeof v === "string" ? v.trim() : "");
+  const out = spec.parts.map((p) => (p.kind === "target" ? t!.value : p.kind === "flag" ? (values[p.key] ? p.key : "") : word(values[p.key])));
+  const args = [...(slot ? [] : [t?.value]), ...out, word(values.extra)].filter(Boolean).join(" ");
+  return { args, target: t?.value, note: t?.note };
+}
 
 // Picked PRs in stack order (bottom to top); the last one's branch contains all the others.
 export const inScope = (stack: number[], picked: Set<number>) => stack.filter((n) => picked.has(n));
