@@ -66,6 +66,7 @@ const attachmentsEl = $<HTMLDivElement>("attachments");
 const settingsBtn = $<HTMLButtonElement>("settings-btn");
 const settingsBox = $<HTMLDivElement>("settings");
 const pinBtn = $<HTMLButtonElement>("pin-btn");
+const goTo = $<HTMLAnchorElement>("go-to");
 const actionsBar = $<HTMLDivElement>("actions");
 const menuBox = $<HTMLDivElement>("menu");
 const reviewBtn = $<HTMLButtonElement>("review-btn");
@@ -129,7 +130,25 @@ function setStatus(text: string) {
   lastStatus = text;
   const name = viewName();
   statusText.textContent = !pinned ? text : text === name ? `Pinned · ${name}` : `Pinned · ${name} · ${text}`;
+  goTo.hidden = !pinned || (!pr && !ticket);
+  goTo.textContent = `↗ ${name}`;
 }
+
+// The page the pinned context came from: its open tab if there is one, else a fresh Graphite/Linear tab.
+let viewUrl: string | undefined;
+goTo.onclick = async (e) => {
+  e.preventDefault();
+  const key = viewKey();
+  const tabs = await chrome.tabs.query({});
+  const open = tabs.find((t) => viewKey(parsePr(t.url), parsePr(t.url) ? null : parseTicket(t.url)) === key);
+  if (open?.id !== undefined) {
+    await chrome.tabs.update(open.id, { active: true });
+    await chrome.windows.update(open.windowId, { focused: true });
+    return;
+  }
+  const url = pr ? viewUrl ?? `https://app.graphite.com/github/pr/${pr.owner}/${pr.repo}/${pr.number}` : ticket?.url;
+  if (url) await chrome.tabs.create({ url });
+};
 
 const isCreating = () => document.body.classList.contains("creating");
 
@@ -939,6 +958,7 @@ async function syncActiveTab(force = false) {
   // Opening the panel counts as looking at the tab.
   if (tab?.id !== undefined) void chrome.tabs.sendMessage(tab.id, { type: "unmark" }).catch(() => {});
   if (pinned) return force ? loadSessions() : undefined;
+  viewUrl = tab?.url;
   const nextPr = parsePr(tab?.url);
   await switchTo(nextPr, nextPr ? null : parseTicket(tab?.url), force);
 }
