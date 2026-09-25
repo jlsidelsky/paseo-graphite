@@ -1,4 +1,6 @@
-// "Send to Paseo" on review comments and diff selections. Block-scoped: content.js shares this global scope.
+"use strict";
+// "Send to Paseo" on review comments and diff selections. Block-scoped and strict: content.js and inbox.js share this global
+// scope, and without strict mode the functions declared in this block would leak into it (and break inbox.js's `scan`).
 {
   // ---- Graphite DOM knowledge: fix selectors here. ----
   // Diff selectors come from github.com/nprbst/graphite-tour-export, which reads Graphite's CSS-module class
