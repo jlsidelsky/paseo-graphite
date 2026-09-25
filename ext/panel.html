@@ -19,19 +19,20 @@
     #settings input { accent-color: var(--accent); margin: 0; }
     #actions { display: flex; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); position: relative; }
     #actions[hidden] { display: none; }
-    #actions > button { font-size: 12px; padding: 2px 8px; }
+    #actions > button { font-size: 12px; padding: 2px 8px; white-space: nowrap; flex: none; }
+    #actions > #scope-btn { flex: 0 1 auto; min-width: 4em; overflow: hidden; text-overflow: ellipsis; }
     #menu { position: absolute; top: 100%; margin-top: 2px; z-index: 2; min-width: 220px; max-width: calc(100% - 20px); max-height: 60vh; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.25); padding: 4px; display: flex; flex-direction: column; }
     #menu[hidden] { display: none; }
     #menu h4 { margin: 6px 6px 2px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
     .menu-item { border: 0; background: none; text-align: left; display: flex; gap: 8px; align-items: baseline; padding: 4px 6px; border-radius: 5px; }
     .menu-item:hover, .menu-item:focus-visible { background: color-mix(in srgb, var(--accent) 18%, transparent); }
-    .menu-item b { font-weight: 500; white-space: nowrap; }
+    .menu-item b { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     .menu-item span { color: var(--muted); font-size: 12px; margin-left: auto; }
     .menu-link { border: 0; background: none; color: var(--accent); padding: 2px 6px; font-size: 12px; text-align: left; }
     .menu-note { color: var(--muted); padding: 4px 6px; font-size: 12px; }
     #actions .sep { width: 1px; background: var(--border); margin: 2px 0; }
     #scope-btn:disabled { opacity: .7; }
-    #ci-state { margin-left: auto; align-self: center; font-size: 11px; color: var(--muted); white-space: nowrap; }
+    #ci-state { margin-left: auto; align-self: center; font-size: 11px; color: var(--muted); white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     #ci-state.failure { color: #d33; } #ci-state.pending { color: #d98a00; } #ci-state.success { color: #2a9d3f; }
     .scope { display: flex; flex-direction: column; gap: 1px; padding-top: 2px; border-top: 1px solid var(--border); margin-top: 2px; }
     .scope .primary { align-self: flex-end; margin: 4px 6px 2px; font-size: 12px; background: var(--accent); border-color: var(--accent); color: #fff; }

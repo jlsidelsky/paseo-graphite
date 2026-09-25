@@ -969,7 +969,11 @@ async function openMenu(anchor: HTMLElement, build: () => Promise<Node[]>, custo
   const nodes = await build().catch((err) => [el("div", { className: "menu-note", textContent: String(err) })]);
   const link = el("button", { className: "menu-link", textContent: "Customize…" });
   link.onclick = () => (closeMenu(), void chrome.runtime.openOptionsPage());
-  if (menuFor === anchor) menuBox.replaceChildren(...nodes, ...(customize ? [link] : []));
+  if (menuFor !== anchor) return;
+  menuBox.replaceChildren(...nodes, ...(customize ? [link] : []));
+  // Keep it inside a narrow panel: shift left rather than overflow the right edge.
+  const room = menuBox.parentElement!.clientWidth - menuBox.offsetWidth - 10;
+  menuBox.style.left = `${Math.max(10, Math.min(anchor.offsetLeft, room))}px`;
 }
 
 function menuItem(label: string, sub: string | undefined, onPick: () => void, title = "") {
