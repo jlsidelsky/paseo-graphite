@@ -1064,8 +1064,8 @@ function presetMenu(anchor: HTMLElement, own: MenuPreset[], commands: MenuPreset
 const withHint = (x: Preset, found: Found[]): MenuPreset =>
   x.command ? { ...x, argumentHint: found.find((c) => c.name === x.command && (!x.provider || c.provider === x.provider))?.argumentHint } : x;
 
-reviewBtn.onclick = () =>
-  void openMenu(reviewBtn, async () => {
+const openReview = () =>
+  openMenu(reviewBtn, async () => {
     const [found, store] = await Promise.all([discover(), loadPresets()]);
     return presetMenu(
       reviewBtn,
@@ -1073,6 +1073,7 @@ reviewBtn.onclick = () =>
       found.filter(isReviewCommand).map((c) => commandPreset(c, "review", store.overrides)),
     );
   });
+reviewBtn.onclick = () => void openReview();
 
 // One CI preset runs straight away; several get a menu.
 async function openFixCi() {
@@ -1082,8 +1083,8 @@ async function openFixCi() {
 }
 fixCiBtn.onclick = openFixCi;
 
-feedbackBtn.onclick = () =>
-  void openMenu(feedbackBtn, async () => {
+const openFeedback = () =>
+  openMenu(feedbackBtn, async () => {
     const [found, store] = await Promise.all([discover(), loadPresets()]);
     return presetMenu(
       feedbackBtn,
@@ -1091,6 +1092,7 @@ feedbackBtn.onclick = () =>
       found.filter(isFeedbackCommand).map((c) => commandPreset(c, "feedback-address", store.overrides)),
     );
   });
+feedbackBtn.onclick = () => void openFeedback();
 
 // By path, not containment: picking an item can replace it (an "ask" preset swaps in the scope picker).
 document.addEventListener("click", (e) => {
@@ -1362,17 +1364,20 @@ async function takeStart() {
   if (isCreating()) closeNewForm();
   await openNewForm();
 }
-// An inbox pill (ext/inbox.js → background "open-pr") or a CI alert: switch to that PR, pinned, and for the alert's Fix CI open its menu.
+// An inbox pill (ext/inbox.js → background "open-pr"), a CI alert or the PR page's actions bar (ext/content.js → "pr-action"):
+// switch to that PR, pinned unless it came from the PR's own page, and open the action's menu.
 // A request the panel was too late for is dropped.
+const ACTION_MENUS: Record<string, () => Promise<unknown>> = { review: openReview, fixci: openFixCi, feedback: openFeedback };
 async function takeOpen() {
   const key = await openKey;
-  const open = (await chrome.storage.session.get<Record<string, { url?: string; at?: number; fixCi?: boolean }>>(key))[key];
+  const open = (await chrome.storage.session.get<Record<string, { url?: string; at?: number; action?: string; pin?: boolean }>>(key))[key];
   if (!open) return;
   await chrome.storage.session.remove(key);
   const p = parsePr(open.url);
   if (!p || Date.now() - (open.at ?? 0) >= 60_000) return;
-  await openPr(p, open.url);
-  if (open.fixCi) await openFixCi();
+  if (open.pin === false) await switchTo(p, null, true);
+  else await openPr(p, open.url);
+  await ACTION_MENUS[open.action ?? ""]?.();
 }
 chrome.storage.session.onChanged.addListener(async (changes) => {
   if (changes[await openKey]?.newValue && connected()) void takeOpen();

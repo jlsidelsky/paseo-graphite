@@ -20,6 +20,8 @@ Chrome side panel that lists the Paseo sessions on the Graphite or GitHub PR you
 
 A floating button on the PR page shows how many sessions it has, updated live, and opens the panel.
 
+The PR page's header also gets the actions bar's buttons, **Review ▾**, **Fix CI ▾** and **Feedback ▾**. On Graphite they sit next to **Review Changes**, and on GitHub at the end of the author and branches line. Each one opens the panel on the PR with that menu open, so you pick the scope, a preset, and a session or ＋ New as in the panel. Fix CI is muted when a Paseo workspace on the PR reports passing checks.
+
 On the inbox and PR lists, each PR with sessions gets a pill in its title cell, updated live: **needs you**, **● running** (with a count above one), or **N sessions**. Clicking it opens the panel on that PR, pinned, without leaving the inbox; **↗ PR #N** goes to the PR, and unpinning goes back to the inbox list.
 
 On Graphite's inbox, PRs in the same stack fold into one row: the stack's first row in the section gets **▸ Stack · N**, and the other members' rows are hidden. Expanded, the whole stack is listed under it, bottom to top, each with its position, link and pill. The panel's Inbox view groups them the same way, and remembers the same expanded stacks. A stack is PRs whose base branch is another listed PR's head, found through Paseo's GitHub search (one search per author, cached for 5 minutes), so it needs a Paseo workspace in that repo; without one, its PRs aren't grouped. Stacks are grouped per section: members that Graphite puts in different sections group separately. Turn it off with **Group stacks in the inbox** under ⚙ Customize or on the options page.

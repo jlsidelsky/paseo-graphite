@@ -86,13 +86,76 @@ function unmark() {
   state.added?.remove();
 }
 
+// ---- PR page actions bar: fix anchors here. ----
+// Graphite: before Review Changes in the header's action row, found by its CSS-module prefix (the hash changes per deploy).
+// GitHub: the end of the React header's author/branches row, or the classic header's actions.
+const BAR_ANCHOR = location.hostname === "github.com"
+  ? '[data-component="PageHeader.Description"] > div, .gh-header-actions'
+  : '[class*="ReviewChangesAction_reviewChangesAction__"]';
+let bar = null;
+let ci = null;
+
+// Each button opens the panel on this PR with that action's menu open, as the panel's actions bar does.
+function makeBar() {
+  const root = document.createElement("span");
+  root.setAttribute("data-paseo-bar", "");
+  root.style.cssText =
+    "all:initial;display:inline-flex;align-items:stretch;flex:none;height:32px;box-sizing:border-box;border:1px solid rgba(127,127,127,.35);" +
+    "border-radius:6px;overflow:hidden;font:500 12px system-ui,sans-serif;color:inherit;";
+  const icon = Object.assign(document.createElement("img"), { src: chrome.runtime.getURL("icons/32.png"), alt: "Paseo", title: "Paseo" });
+  icon.style.cssText = "width:16px;height:16px;align-self:center;margin:0 2px 0 8px;";
+  root.append(icon);
+  for (const [action, text, title] of [
+    ["review", "Review ▾", "Review this PR or its stack in a Paseo session"],
+    ["fixci", "Fix CI ▾", "Ask a Paseo session to fix the failing checks"],
+    ["feedback", "Feedback ▾", "Evaluate or address review feedback in a Paseo session"],
+  ]) {
+    const b = document.createElement("button");
+    b.dataset.action = action;
+    b.textContent = text;
+    b.title = title;
+    b.style.cssText = "all:initial;cursor:pointer;padding:0 8px;font:inherit;color:inherit;border-left:1px solid rgba(127,127,127,.25);";
+    b.onmouseenter = () => (b.style.background = "rgba(127,127,127,.12)");
+    b.onmouseleave = () => (b.style.background = "none");
+    b.onfocus = () => (b.style.outline = "2px solid #d97757");
+    b.onblur = () => (b.style.outline = "none");
+    b.onclick = () => chrome.runtime.sendMessage({ type: "pr-action", url: location.href, action }).catch(() => {});
+    root.append(b);
+  }
+  root.firstElementChild.nextElementSibling.style.borderLeft = "none";
+  return root;
+}
+
+// Muted, still clickable: Paseo only knows the checks of PRs a workspace is on, and the panel's menu covers the whole scope.
+function paintCi() {
+  const b = bar?.querySelector('[data-action="fixci"]');
+  if (!b) return;
+  b.style.opacity = ci === "success" ? ".5" : "1";
+  b.title = ci === "success" ? "All checks pass" : ci === "failure" ? "Checks are failing: ask a Paseo session to fix them" : "Ask a Paseo session to fix the failing checks";
+}
+
+// Re-attached on every tick: Graphite and GitHub re-render the header on navigation.
+function placeBar() {
+  if (!/\/(?:pr\/[^/]+\/[^/]+|pull)\/\d+/.test(location.pathname)) return bar?.remove();
+  const anchor = document.querySelector(BAR_ANCHOR);
+  if (!anchor || bar?.isConnected && (anchor.previousElementSibling === bar || anchor.lastElementChild === bar)) return;
+  bar ??= makeBar();
+  paintCi();
+  if (location.hostname === "github.com") anchor.append(bar);
+  else anchor.before(bar);
+}
+// ---- end PR page actions bar ----
+
 async function pull() {
-  render(await chrome.runtime.sendMessage({ type: "pr-sessions", url: location.href }).catch(() => null));
+  const res = await chrome.runtime.sendMessage({ type: "pr-sessions", url: location.href }).catch(() => null);
+  render(res);
+  ci = res?.ci ?? null;
+  paintCi();
 }
 
 // The background pushes counts as sessions change, and marks the tab when one finishes or needs you.
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === "pr-sessions") render(msg);
+  if (msg.type === "pr-sessions") render(msg), (ci = msg.ci ?? null), paintCi();
   if (msg.type === "mark") void mark();
   if (msg.type === "unmark") unmark();
 });
@@ -101,6 +164,7 @@ window.addEventListener("focus", unmark);
 
 // ponytail: Graphite and GitHub are SPAs, so poll for URL changes; the Navigation API's navigate event could replace this.
 setInterval(() => {
+  placeBar();
   if (location.href !== lastUrl) {
     lastUrl = location.href;
     void pull();
