@@ -12,7 +12,8 @@ Chrome side panel that lists the Paseo sessions on the Graphite or GitHub PR you
 - on a Linear issue, see the sessions for that ticket (a workspace on a branch containing its ID, or a `ticket:<ID>` label) and start one in a fresh worktree on a branch named for the ticket, its first message the ticket title and link. The Linear page's **▶ Paseo** button opens that form;
 - anywhere else, see every session grouped into needs you, running and recently finished, and open any of them;
 - pin (📌) the panel to what it's showing, so it stays put while you switch tabs. The composer keeps a draft per PR, ticket or the all-sessions view;
-- hand a review comment or selected diff lines to the session: **→ Paseo** on a comment, or on a selection in the diff, drops them into the composer to edit and send. On GitHub this works in both the classic and the new "Files changed" view.
+- hand a review comment or selected diff lines to the session: **→ Paseo** on a selection in the diff drops the lines into the composer, and a comment's **Evaluate**, **Address** or **Insert** drops it in wrapped in that prompt (or as is). On GitHub this works in both the classic and the new "Files changed" view;
+- on a PR, fill the composer from the actions bar: **Review ▾** (this PR, the whole stack or some of its PRs; your presets plus the review commands and skills your Claude and Codex sessions have, like `/code-review`), **Fix CI** (lists the failing checks when Paseo knows them; greyed out when they all pass) and **Feedback ▾** (evaluate or address the review comments). Nothing is sent: pick a session, or open ＋ New, which then suggests a worktree on the right PR (for a stack review, its topmost picked PR) and a model of the command's provider. Edit the prompts under ⚙ → **Customize prompts…**.
 
 A floating button on the PR page shows how many sessions it has, updated live, and opens the panel.
 

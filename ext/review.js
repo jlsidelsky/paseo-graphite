@@ -63,7 +63,8 @@
   const dom = location.hostname === "github.com" ? github : graphite;
   const BTN = "data-paseo-send";
 
-  const send = (text) => chrome.runtime.sendMessage({ type: "to-paseo", text }).catch(() => {});
+  // intent "evaluate" / "address" has the panel wrap a comment in that prompt; none quotes it as is.
+  const send = (text, intent) => chrome.runtime.sendMessage({ type: "to-paseo", text, intent }).catch(() => {});
 
   const rowOf = (node) => {
     for (let n = node; n?.parentElement; n = n.parentElement) if (n.parentElement.matches(dom.DIFF_LINES)) return n;
@@ -103,12 +104,12 @@
     return `Lines from ${where(start && dom.filePath(start), lines)}:\n\`\`\`${rows.length ? "diff" : ""}\n${code}\n\`\`\`\n\n${location.href}`;
   }
 
-  function button(label, style) {
+  function button(label, style, text = "→ Paseo") {
     const b = document.createElement("button");
     b.setAttribute(BTN, "");
     b.setAttribute("aria-label", label);
     b.title = label;
-    b.textContent = "→ Paseo";
+    b.textContent = text;
     b.style.cssText = `all:initial;cursor:pointer;font:500 11px system-ui,sans-serif;padding:2px 8px;border-radius:999px;${style}`;
     b.onfocus = () => (b.style.outline = "2px solid #d97757");
     b.onblur = () => (b.style.outline = "none");
@@ -119,12 +120,21 @@
     if (!prNumber()) return;
     for (const body of document.querySelectorAll(dom.COMMENT_BODY)) {
       if (body.nextElementSibling?.hasAttribute(BTN)) continue;
-      const b = button(
-        "Send this comment to Paseo",
-        `display:inline-block;margin-top:4px;color:${getComputedStyle(body).color};border:1px solid rgba(127,127,127,.4);background:rgba(127,127,127,.1);`,
-      );
-      b.onclick = () => send(commentText(body));
-      body.after(b);
+      const style = `display:inline-block;color:${getComputedStyle(body).color};border:1px solid rgba(127,127,127,.4);background:rgba(127,127,127,.1);`;
+      const group = document.createElement("span");
+      group.setAttribute(BTN, "");
+      group.style.cssText = `all:initial;display:inline-flex;gap:4px;align-items:center;margin-top:4px;font:500 11px system-ui,sans-serif;color:${getComputedStyle(body).color};`;
+      group.append("→ Paseo:");
+      for (const [text, label, intent] of [
+        ["Evaluate", "Ask a Paseo session whether this comment is valid", "evaluate"],
+        ["Address", "Ask a Paseo session to address this comment", "address"],
+        ["Insert", "Quote this comment in the Paseo composer", undefined],
+      ]) {
+        const b = button(label, style, text);
+        b.onclick = () => send(commentText(body), intent);
+        group.append(b);
+      }
+      body.after(group);
     }
   }
 
@@ -154,7 +164,7 @@
     floating.onclick = () => (send(text), floating?.remove(), (floating = null));
     document.body.append(floating);
   }
-  const ours = (e) => e.target instanceof Element && e.target.hasAttribute(BTN);
+  const ours = (e) => e.target instanceof Element && !!e.target.closest(`[${BTN}]`);
   document.addEventListener("mouseup", (e) => !ours(e) && setTimeout(onSelect));
   document.addEventListener("keyup", (e) => e.shiftKey && !ours(e) && onSelect());
   document.addEventListener("scroll", () => (floating?.remove(), (floating = null)), true);

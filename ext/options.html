@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Paseo for Graphite · Options</title>
+  <style>
+    :root { color-scheme: light dark; --fg: light-dark(#1f1f1f, #e8e8e8); --muted: light-dark(#6b6b6b, #9a9a9a); --bg: light-dark(#f7f7f5, #1c1c1c); --card: light-dark(#fff, #262626); --border: light-dark(#e2e2de, #3a3a3a); --accent: #d97757; }
+    body { margin: 0 auto; max-width: 760px; padding: 20px; font: 13px/1.45 -apple-system, system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+    h1 { font-size: 18px; } h2 { font-size: 14px; margin-top: 24px; }
+    p, small { color: var(--muted); }
+    code { font: 12px ui-monospace, Menlo, monospace; }
+    input, select, button, textarea { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; }
+    button { cursor: pointer; }
+    .preset { display: flex; flex-direction: column; gap: 6px; padding: 10px; margin-bottom: 8px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; }
+    .row { display: flex; gap: 6px; align-items: center; }
+    .row input[name=label] { flex: 1; }
+    textarea { width: 100%; box-sizing: border-box; min-height: 90px; resize: vertical; }
+    .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  </style>
+</head>
+<body>
+  <h1>Paseo for Graphite</h1>
+  <section id="presets">
+    <h2>Prompt presets</h2>
+    <p>
+      The panel's <b>Review</b>, <b>Fix CI</b> and <b>Feedback</b> actions put these in the composer. Slash commands and skills your sessions
+      have (like <code>/code-review</code>) show up next to them on their own. Placeholders: <code>{pr}</code> (#123), <code>{url}</code>,
+      <code>{prs}</code> (one "#n url" line per PR in the review's scope, bottom to top), <code>{checks}</code> (failing checks, for Fix CI),
+      <code>{comment}</code> (the comment, for a comment's Evaluate / Address; empty from the menu). Provider (e.g. <code>claude</code>,
+      <code>codex</code>) preselects that provider's model for a new session. Fix CI uses the first CI preset, and a comment's Evaluate /
+      Address the first of that kind; a skill like <code>/assess-feedback</code> is used instead while that preset is unedited.
+    </p>
+    <div id="list"></div>
+    <div class="row">
+      <button id="add">Add preset</button><button id="reset">Reset to defaults</button><span style="flex: 1"></span>
+      <small id="saved"></small><button id="save" class="primary">Save</button>
+    </div>
+  </section>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

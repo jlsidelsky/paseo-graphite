@@ -94,12 +94,12 @@ function counts(pr: Pr) {
 let drafting = Promise.resolve();
 
 // ext/review.js text for the panel's composer, per window; the panel takes it on load or on change.
-function queueDraft(windowId: number, text: string) {
+function queueDraft(windowId: number, draft: { text: string; intent?: string }) {
   const key = `draft:${windowId}`;
   drafting = drafting
     .then(async () => {
       const prev = (await chrome.storage.session.get(key))[key];
-      await chrome.storage.session.set({ [key]: typeof prev === "string" && prev ? `${prev}\n\n${text}` : text });
+      await chrome.storage.session.set({ [key]: [...(Array.isArray(prev) ? prev : []), draft] });
     })
     .catch(() => {});
 }
@@ -150,7 +150,8 @@ chrome.notifications.onClicked.addListener((id) => {
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.type === "to-paseo" && sender.tab && typeof msg.text === "string") {
     void chrome.sidePanel.open({ windowId: sender.tab.windowId });
-    queueDraft(sender.tab.windowId, msg.text);
+    const intent = msg.intent === "evaluate" || msg.intent === "address" ? msg.intent : undefined;
+    queueDraft(sender.tab.windowId, { text: msg.text, intent });
     return;
   }
   // From ext/linear.js; the panel reads the key, opens its new-session form for the ticket, and removes it.

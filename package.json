@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Chrome side panel for chatting with the Paseo sessions behind a Graphite PR.",
   "scripts": {
-    "build": "esbuild src/panel.ts src/background.ts --bundle --format=esm --platform=browser --target=chrome120 --conditions=node --minify --outdir=ext",
+    "build": "esbuild src/panel.ts src/background.ts src/options.ts --bundle --format=esm --platform=browser --target=chrome120 --conditions=node --minify --outdir=ext",
     "watch": "npm run build -- --watch",
     "typecheck": "tsc --noEmit"
   },

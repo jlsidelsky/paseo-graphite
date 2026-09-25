@@ -1,6 +1,20 @@
 import { createPaseoApi, type PaseoAgent } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import MarkdownIt from "markdown-it";
+import {
+  checksText,
+  DEFAULT_PRESETS,
+  feedbackPrompt,
+  fillPrompt,
+  inScope,
+  isFeedbackCommand,
+  isReviewCommand,
+  mergeDraft,
+  prLines,
+  prUrl,
+  scopeText,
+  type Preset,
+} from "./actions";
 import { diffStrings, parseUnifiedDiff, type DiffLine } from "./diff";
 import { isAnswered, parseQuestions, questionResponse, showsText, type Question } from "./question";
 import {
@@ -52,6 +66,11 @@ const attachmentsEl = $<HTMLDivElement>("attachments");
 const settingsBtn = $<HTMLButtonElement>("settings-btn");
 const settingsBox = $<HTMLDivElement>("settings");
 const pinBtn = $<HTMLButtonElement>("pin-btn");
+const actionsBar = $<HTMLDivElement>("actions");
+const menuBox = $<HTMLDivElement>("menu");
+const reviewBtn = $<HTMLButtonElement>("review-btn");
+const fixCiBtn = $<HTMLButtonElement>("fix-ci-btn");
+const feedbackBtn = $<HTMLButtonElement>("feedback-btn");
 
 const daemon = new DaemonClient({ url: DAEMON_URL, clientId: "paseo-graphite", clientType: "browser" });
 const paseo = createPaseoApi(daemon);
@@ -71,6 +90,14 @@ let agents: PaseoAgent[] = [];
 // Sessions on other PRs in the same stack; `agents` stays the current PR's.
 let stackGroups: { pr: StackPr; agents: PaseoAgent[] }[] = [];
 const stackCache = new Map<string, Promise<StackPr[]>>();
+// The whole stack, bottom to top, once loaded; empty when the PR isn't in one.
+let stackPrs: StackPr[] = [];
+// What a PR action suggests for a new session, if the user opens ＋ New: a worktree on PR `number` (or its
+// existing workspace when `reuse`) and a model of `provider`.
+type NewDefaults = { number: number; reuse: boolean; provider?: string };
+let newDefaults: NewDefaults | null = null;
+// Review scope: the stack PRs ticked in the Review menu.
+let picked = new Set<number>();
 let rewindMenuFor: string | null = null;
 let selectedId: string | null = null;
 let unsubscribeTimeline: (() => void) | null = null;
@@ -115,6 +142,9 @@ async function loadSessions() {
   const mine = target ? agentsOnPr(workspaces, everyone, target) : t ? agentsOnTicket(workspaces, everyone, t.id) : everyone.filter((a) => !a.archivedAt);
   agents = [...mine.filter((a) => !a.archivedAt), ...mine.filter((a) => a.archivedAt)];
   stackGroups = [];
+  stackPrs = [];
+  actionsBar.hidden = !target;
+  if (target) updateFixCi();
   renderPicker();
   if (target) void loadStack(target, everyone);
 }
@@ -126,6 +156,7 @@ async function loadStack(target: Pr, all: PaseoAgent[]) {
   if (!stackCache.has(key)) stackCache.set(key, stackOf(daemon, cwd, target).catch(() => (stackCache.delete(key), [])));
   const stack = await stackCache.get(key)!;
   if (pr?.number !== target.number || pr.repo !== target.repo) return;
+  stackPrs = stack;
   const seen = new Set(agents.map((a) => a.id));
   stackGroups = stack
     .filter((s) => s.number !== target.number)
@@ -507,9 +538,9 @@ async function openNewForm() {
   newBtn.textContent = "Cancel";
   prompt.placeholder = "First message for the new session";
   selectAgent(null);
-  const text = pr ? `PR #${pr.number}: https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}\n\n` : ticket ? await ticketPrefill(ticket) : "";
-  // A leftover draft stays, below the PR/ticket context.
-  if (text && isCreating() && !prompt.value.includes(text.trim())) {
+  const text = pr ? `PR #${pr.number}: ${prUrl(pr)}\n\n` : ticket ? await ticketPrefill(ticket) : "";
+  // A leftover draft stays, below the PR/ticket context. A slash command has to stay first, and an action's prompt already names the PR.
+  if (text && isCreating() && !prompt.value.includes(text.trim()) && !prompt.value.startsWith("/") && !(pr && prompt.value.includes(prUrl(pr)))) {
     prompt.value = prefill = prompt.value.trim() ? `${text}${prompt.value}` : text;
     prompt.focus();
     prompt.setSelectionRange(prompt.value.length, prompt.value.length);
@@ -519,15 +550,20 @@ async function openNewForm() {
   const roots = recentRoots();
   const byProject = (list: Workspace[]) =>
     roots.map((r) => list.filter((w) => w.projectRootPath === r)).filter((g) => g.length).map((g) => el("optgroup", { label: g[0].projectDisplayName }, ...g.map(option)));
+  const d = newDefaults;
   if (pr) {
     const prWs = workspaces.filter(isPrWorkspace);
     const others = workspaces.filter((w) => !isPrWorkspace(w));
+    const stacked = stackPrs.filter((s) => s.number !== pr!.number);
+    const checkout = (n: number, title = "") => el("option", { value: NEW_WORKTREE + n, textContent: `New worktree checked out to PR #${n}${title && ` ${title}`}` });
     workspaceSelect.replaceChildren(
       ...(prWs.length ? [el("optgroup", { label: `On PR #${pr.number}` }, ...prWs.map(option))] : []),
-      el("option", { value: NEW_WORKTREE, textContent: `New worktree checked out to PR #${pr.number}` }),
+      checkout(pr.number),
+      ...(stacked.length ? [el("optgroup", { label: "Other PRs in the stack" }, ...stacked.map((s) => checkout(s.number, s.title)))] : []),
       el("optgroup", { label: "Other workspaces" }, ...others.map(option)),
     );
-    workspaceSelect.value = prWs[0]?.id ?? NEW_WORKTREE;
+    const target = d?.number ?? pr.number;
+    workspaceSelect.value = (d?.reuse !== false && target === pr.number && prWs[0]?.id) || NEW_WORKTREE + target;
   } else if (ticket) {
     const id = ticket.id;
     const onTicket = workspaces.filter((w) => isTicketWorkspace(w, id));
@@ -567,7 +603,8 @@ async function openNewForm() {
   };
   modeSelect.onchange = () => localStorage.setItem(`mode:${modelSelect.value.split("/")[0]}`, modeSelect.value);
   modelSelect.onchange = () => (fillEfforts(), fillModes());
-  const preferred = models.find((m) => m.isDefault && m.key.startsWith("claude/")) ?? models[0];
+  const of = (p: string) => models.find((m) => m.isDefault && m.key.startsWith(`${p}/`)) ?? models.find((m) => m.key.startsWith(`${p}/`));
+  const preferred = (d?.provider && of(d.provider)) || of("claude") || models[0];
   if (preferred) modelSelect.value = preferred.key;
   fillEfforts();
   fillModes();
@@ -604,14 +641,15 @@ async function createSession(text: string, imgs: typeof images) {
     ...(modeSelect.value && !modeSelect.hidden ? { modeId: modeSelect.value } : {}),
   };
   let workspace;
-  if (pr && workspaceSelect.value === NEW_WORKTREE) {
+  if (pr && workspaceSelect.value.startsWith(NEW_WORKTREE)) {
     const target = pr;
+    const number = Number(workspaceSelect.value.slice(NEW_WORKTREE.length));
     const repoRoot = workspaces.find((w) => isRepo(w, target))?.projectRootPath;
     if (!repoRoot) throw new Error(`No Paseo project for ${pr.owner}/${pr.repo}`);
     setStatus("Creating worktree…");
-    timeline.replaceChildren(el("div", { className: "empty", textContent: `Creating a worktree for PR #${pr.number}. This takes a few seconds.` }));
+    timeline.replaceChildren(el("div", { className: "empty", textContent: `Creating a worktree for PR #${number}. This takes a few seconds.` }));
     workspace = await paseo.workspaces.create({
-      source: { kind: "worktree", cwd: repoRoot, action: "checkout", checkoutSource: { kind: "change_request", forge: "github", number: pr.number } },
+      source: { kind: "worktree", cwd: repoRoot, action: "checkout", checkoutSource: { kind: "change_request", forge: "github", number } },
     });
   } else if (ticket && workspaceSelect.value.startsWith(NEW_WORKTREE)) {
     const branchName = ticketBranch(ticket);
@@ -630,6 +668,7 @@ async function createSession(text: string, imgs: typeof images) {
   const labels = label ? { [label]: new Date().toISOString().slice(0, 10) } : {};
   const agent = await workspace.agents.create({ config, prompt: text, labels, ...(imgs.length ? { images: imgs } : {}) });
   closeNewForm();
+  newDefaults = null;
   selectedId = agent.id;
   unsubscribeTimeline?.();
   unsubscribeTimeline = null;
@@ -690,6 +729,11 @@ async function send() {
 type Command = Awaited<ReturnType<typeof daemon.listCommands>>["commands"][number];
 const commandCache = new Map<string, Promise<Command[]>>();
 let suggestions: Command[] = [];
+
+function commandsOf(id: string) {
+  if (!commandCache.has(id)) commandCache.set(id, daemon.listCommands(id).then((r) => r.commands, () => []));
+  return commandCache.get(id)!;
+}
 let suggestIndex = 0;
 
 // Paseo returns nothing before a session exists, so a new session's first message gets no suggestions.
@@ -697,8 +741,7 @@ async function updateSuggestions() {
   const query = prompt.value.match(/^\/(\S*)$/)?.[1];
   const id = selectedId;
   if (query === undefined || !id || isCreating()) return closeSuggestions();
-  if (!commandCache.has(id)) commandCache.set(id, daemon.listCommands(id).then((r) => r.commands, () => []));
-  const commands = await commandCache.get(id)!;
+  const commands = await commandsOf(id);
   if (prompt.value.match(/^\/(\S*)$/)?.[1] !== query) return;
   const q = query.toLowerCase();
   suggestions = commands
@@ -736,6 +779,161 @@ function closeSuggestions() {
   suggestions = [];
 }
 
+// ---- PR actions: each one only fills the composer; ＋ New picks up the workspace and model it suggests. ----
+
+function fillComposer(text: string) {
+  prompt.value = mergeDraft(prompt.value, text);
+  prompt.focus();
+  prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+}
+
+function act(text: string, defaults: NewDefaults) {
+  closeMenu();
+  newDefaults = defaults;
+  fillComposer(text);
+  // Re-run the form so an open one takes the new defaults.
+  if (isCreating()) void openNewForm();
+}
+
+const loadPresets = () =>
+  chrome.storage.sync.get({ presets: DEFAULT_PRESETS }).then((r) => (Array.isArray(r.presets) ? (r.presets as Preset[]) : DEFAULT_PRESETS));
+
+type Found = Command & { provider: string; providerLabel: string };
+
+// Commands are per session, and a session only exists once started, so ask one per ready provider: this PR's first, else the latest.
+async function discover(): Promise<Found[]> {
+  const snapshot = await paseo.providers.snapshot();
+  const pool = [...listed(), ...byRecency(everyone)].filter((a) => !a.archivedAt);
+  const lists = await Promise.all(
+    snapshot.entries
+      .filter((p) => p.enabled && p.status === "ready")
+      .map(async (p) => {
+        const a = pool.find((x) => x.provider === p.provider);
+        return a ? (await commandsOf(a.id)).map((c) => ({ ...c, provider: p.provider, providerLabel: p.label ?? p.provider })) : [];
+      }),
+  );
+  return lists.flat();
+}
+
+const ghPr = () => workspaces.filter(isPrWorkspace).map((w) => w.githubRuntime?.pullRequest).find((p) => p?.checks?.length);
+
+function updateFixCi() {
+  const passing = ghPr()?.checksStatus === "success";
+  fixCiBtn.disabled = passing;
+  fixCiBtn.title = passing ? "All checks pass" : "Ask a session to fix the failing checks";
+}
+
+async function commentPrompt(intent: "evaluate" | "address", comment: string) {
+  const [presets, found] = await Promise.all([loadPresets(), discover()]);
+  // A skill only helps if the session it's sent to has it; with no session chosen yet, ＋ New preselects its provider.
+  const target = isCreating() ? undefined : listed().find((a) => a.id === selectedId)?.provider;
+  const vars = pr ? { pr: `#${pr.number}`, url: prUrl(pr), prs: prLines(pr, [pr.number]), comment } : { comment };
+  const r = feedbackPrompt(`feedback-${intent}`, presets, found.filter((c) => !target || c.provider === target), vars);
+  if (pr) newDefaults = { number: pr.number, reuse: true, provider: r.provider };
+  return r.text;
+}
+
+let menuFor: HTMLElement | null = null;
+
+function closeMenu() {
+  menuFor = null;
+  menuBox.hidden = true;
+}
+
+async function openMenu(anchor: HTMLElement, build: () => Promise<Node[]>) {
+  if (menuFor === anchor) return closeMenu();
+  menuFor = anchor;
+  menuBox.style.left = `${anchor.offsetLeft}px`;
+  menuBox.replaceChildren(el("div", { className: "menu-note", textContent: "Loading…" }));
+  menuBox.hidden = false;
+  const nodes = await build().catch((err) => [el("div", { className: "menu-note", textContent: String(err) })]);
+  const customize = el("button", { className: "menu-link", textContent: "Customize…" });
+  customize.onclick = () => (closeMenu(), void chrome.runtime.openOptionsPage());
+  if (menuFor === anchor) menuBox.replaceChildren(...nodes, customize);
+}
+
+function menuItem(label: string, sub: string | undefined, onPick: () => void, title = "") {
+  const b = el("button", { className: "menu-item", title }, el("b", { textContent: label }), ...(sub ? [el("span", { textContent: sub })] : []));
+  b.onclick = onPick;
+  return b;
+}
+
+const heading = (text: string) => el("h4", { textContent: text });
+
+// Checkboxes over the stack; the scope is whatever is ticked.
+function scopeBox(stack: StackPr[], current: number) {
+  const boxes = stack.map((s) => {
+    const box = el("input", { type: "checkbox", checked: picked.has(s.number) });
+    box.onchange = () => (box.checked ? picked.add(s.number) : picked.delete(s.number));
+    return el("label", { title: s.title }, box, el("span", { textContent: `#${s.number}${s.number === current ? " (this PR)" : ""} ${s.title}` }));
+  });
+  const set = (numbers: number[]) => () => {
+    picked = new Set(numbers);
+    boxes.forEach((l, i) => (l.querySelector("input")!.checked = picked.has(stack[i].number)));
+  };
+  const quick = (label: string, numbers: number[]) => {
+    const b = el("button", { className: "menu-link", textContent: label });
+    b.onclick = set(numbers);
+    return b;
+  };
+  return el(
+    "div",
+    { className: "scope" },
+    el("div", { className: "row" }, el("h4", { textContent: "Scope" }), quick("This PR", [current]), quick("Whole stack", stack.map((s) => s.number))),
+    ...[...boxes].reverse(),
+  );
+}
+
+reviewBtn.onclick = () =>
+  void openMenu(reviewBtn, async () => {
+    const p = pr!;
+    const [stack, found, presets] = await Promise.all([stackCache.get(prLabel(p)) ?? Promise.resolve([]), discover(), loadPresets()]);
+    const numbers = stack.length > 1 ? stack.map((s) => s.number) : [p.number];
+    if (!inScope(numbers, picked).length) picked = new Set([p.number]);
+    const pick = (text: (prs: number[]) => string, provider?: string) => () => {
+      const prs = inScope(numbers, picked);
+      if (!prs.length) return setStatus("Tick at least one PR");
+      // The topmost PR's branch contains everything below it.
+      act(text(prs), { number: prs.at(-1)!, reuse: false, provider });
+    };
+    const commands = found.filter(isReviewCommand);
+    return [
+      ...(stack.length > 1 ? [scopeBox(stack, p.number)] : []),
+      ...presets
+        .filter((x) => x.kind === "review")
+        .map((x) => menuItem(x.label, x.provider, pick((prs) => fillPrompt(x.prompt, { pr: `#${p.number}`, url: prUrl(p), prs: prLines(p, prs) }), x.provider))),
+      ...(commands.length ? [heading("Commands")] : []),
+      ...commands.map((c) => menuItem(`/${c.name}`, c.providerLabel, pick((prs) => `/${c.name} ${scopeText(p, prs)}`, c.provider), c.description)),
+    ];
+  });
+
+fixCiBtn.onclick = async () => {
+  const p = pr!;
+  const preset = (await loadPresets()).find((x) => x.kind === "ci") ?? DEFAULT_PRESETS.find((x) => x.kind === "ci")!;
+  const text = fillPrompt(preset.prompt, { pr: `#${p.number}`, url: prUrl(p), prs: prLines(p, [p.number]), checks: checksText(ghPr()?.checks, p.number) });
+  act(text, { number: p.number, reuse: true, provider: preset.provider });
+};
+
+feedbackBtn.onclick = () =>
+  void openMenu(feedbackBtn, async () => {
+    const p = pr!;
+    const [found, presets] = await Promise.all([discover(), loadPresets()]);
+    const vars = { pr: `#${p.number}`, url: prUrl(p), prs: prLines(p, [p.number]) };
+    const to = (provider?: string) => ({ number: p.number, reuse: true, provider });
+    const commands = found.filter(isFeedbackCommand);
+    return [
+      ...presets
+        .filter((x) => x.kind.startsWith("feedback-"))
+        .map((x) => menuItem(x.label, x.provider, () => act(fillPrompt(x.prompt, vars), to(x.provider)))),
+      ...(commands.length ? [heading("Commands")] : []),
+      ...commands.map((c) => menuItem(`/${c.name}`, c.providerLabel, () => act(`/${c.name} ${prUrl(p)}`, to(c.provider)), c.description)),
+    ];
+  });
+
+document.addEventListener("click", (e) => {
+  if (menuFor && e.target instanceof Node && !menuBox.contains(e.target) && !menuFor.contains(e.target)) closeMenu();
+});
+
 async function syncActiveTab(force = false) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   // Opening the panel counts as looking at the tab.
@@ -751,6 +949,7 @@ async function switchTo(nextPr: Pr | null, nextTicket: Ticket | null, force = fa
   closeNewForm();
   pr = nextPr;
   ticket = nextTicket;
+  if (from !== to) (newDefaults = null), (picked = new Set(nextPr ? [nextPr.number] : [])), closeMenu();
   // Drafts belong to the context they were typed in: park this one, bring back the next one's.
   if (from !== to) {
     void chrome.storage.session.set({ [`ctxdraft:${from}`]: prompt.value });
@@ -862,14 +1061,14 @@ openInPaseo.onclick = (e) => {
 const windowId = chrome.windows.getCurrent().then((w) => w.id);
 const draftKey = windowId.then((id) => `draft:${id}`);
 const startKey = windowId.then((id) => `start:${id}`);
+// ext/review.js hands over comments and diff lines; `intent` asks to evaluate or address a comment instead of just quoting it.
 async function takeDraft() {
   const key = await draftKey;
-  const draft = (await chrome.storage.session.get(key))[key];
-  if (typeof draft !== "string" || !draft) return;
+  const drafts = (await chrome.storage.session.get(key))[key];
+  if (!Array.isArray(drafts) || !drafts.length) return;
   await chrome.storage.session.remove(key);
-  prompt.value = prompt.value.trim() ? `${prompt.value.trimEnd()}\n\n${draft}` : draft;
-  prompt.focus();
-  prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+  for (const { text, intent } of drafts as { text: string; intent?: "evaluate" | "address" }[])
+    fillComposer(intent ? await commentPrompt(intent, text) : text);
 }
 // The Linear page's ▶ Paseo button: switch to that ticket, even when pinned elsewhere, and open its new-session form.
 async function takeStart() {
@@ -893,6 +1092,7 @@ chrome.storage.session.onChanged.addListener(async (changes) => {
 });
 void takeDraft();
 settingsBtn.onclick = () => (settingsBox.hidden = !settingsBox.hidden);
+$<HTMLButtonElement>("customize-btn").onclick = () => void chrome.runtime.openOptionsPage();
 void chrome.storage.sync.get<Record<string, boolean>>(SETTINGS).then((saved) => {
   for (const input of settingsBox.querySelectorAll("input")) {
     input.checked = saved[input.name];
