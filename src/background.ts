@@ -174,10 +174,20 @@ async function prTabs() {
 const send = (tabId: number, msg: object) => chrome.tabs.sendMessage(tabId, msg).catch(() => {});
 
 // Sessions update many times a turn; push once things settle.
+// Windows with the side panel open; the panel holds a port for as long as it's open.
+const openPanels = new Set<number>();
+chrome.runtime.onConnect.addListener((port) => {
+  const windowId = Number(port.name.match(/^panel:(\d+)$/)?.[1]);
+  if (!windowId) return;
+  openPanels.add(windowId);
+  changed();
+  port.onDisconnect.addListener(() => (openPanels.delete(windowId), changed()));
+});
+
 function changed() {
   clearTimeout(pushTimer);
   pushTimer = setTimeout(async () => {
-    for (const { id, pr } of await prTabs()) void send(id, { type: "pr-sessions", ...counts(pr) });
+    for (const { id, pr, tab } of await prTabs()) void send(id, { type: "pr-sessions", ...counts(pr), panelOpen: openPanels.has(tab.windowId) });
     for (const [id, tab] of inboxTabs) void send(id, { type: "inbox-sessions", ...rowStates(tab) });
   }, 300);
 }
@@ -246,7 +256,8 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   }
   if (msg.type === "pr-sessions") {
     const pr = parsePr(msg.url);
-    const live = async () => pr && (await ready()) && (await Promise.all([agentsLive, workspacesLive])).every(Boolean) ? counts(pr) : null;
+    const panelOpen = sender.tab ? openPanels.has(sender.tab.windowId) : false;
+    const live = async () => pr && (await ready()) && (await Promise.all([agentsLive, workspacesLive])).every(Boolean) ? { ...counts(pr), panelOpen } : null;
     live().then(reply, () => reply(null));
     return true;
   }

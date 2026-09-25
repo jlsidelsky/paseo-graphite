@@ -837,14 +837,24 @@ function fillComposer(text: string) {
   prompt.setSelectionRange(prompt.value.length, prompt.value.length);
 }
 
-function act(text: string, defaults: NewDefaults | null) {
+// `fresh`: open ＋ New with the text and the action's defaults, so starting it is one Send.
+function act(text: string, defaults: NewDefaults | null, fresh = false) {
   closeMenu();
   newDefaults = defaults;
   // No defaults: the preset targets the selected session, so leave the new-session form.
-  if (!defaults && isCreating()) closeNewForm(), void loadSessions();
+  if (!fresh && !defaults && isCreating()) closeNewForm(), void loadSessions();
   fillComposer(text);
   // Re-run the form so an open one takes the new defaults.
-  if (defaults && isCreating()) void openNewForm();
+  if (fresh || (defaults && isCreating())) void openNewForm();
+}
+
+// Fill composer, and the same into a new session.
+function goButtons(run: (fresh: boolean) => void) {
+  const fill = el("button", { className: "primary", textContent: "Fill composer" });
+  const fresh = el("button", { textContent: "New session", title: "Open ＋ New with this, ready to send" });
+  fill.onclick = () => run(false);
+  fresh.onclick = () => run(true);
+  return el("div", { className: "go-row" }, fresh, fill);
 }
 
 const loadPresets = () => loadStore(chrome.storage.sync);
@@ -951,9 +961,9 @@ function menuItem(label: string, sub: string | undefined, onPick: () => void, ti
 const heading = (text: string) => el("h4", { textContent: text });
 
 // This PR, the whole stack, or the PRs ticked, bottom to top. `then` is an action waiting on the choice.
-function scopeMenu(then?: () => void) {
+function scopeMenu(then?: (fresh: boolean) => void) {
   const current = pr!.number;
-  const set = (numbers: number[]) => () => ((picked = new Set(numbers)), renderScope(), then ? then() : closeMenu());
+  const set = (numbers: number[]) => () => ((picked = new Set(numbers)), renderScope(), then ? then(false) : closeMenu());
   const boxes = stackPrs.map((s) => {
     const box = el("input", { type: "checkbox", checked: picked.has(s.number) });
     box.onchange = () => {
@@ -963,12 +973,10 @@ function scopeMenu(then?: () => void) {
     };
     return el("label", { title: s.title }, box, el("span", { textContent: `#${s.number}${s.number === current ? " (this PR)" : ""} ${s.title}` }));
   });
-  const go = el("button", { className: "primary", textContent: "Fill composer" });
-  go.onclick = () => then?.();
   return [
     menuItem("This PR", `#${current}`, set([current])),
     menuItem("Whole stack", `${stackPrs.length} PRs`, set(stackNumbers())),
-    el("div", { className: "scope" }, heading("Choose PRs, bottom to top"), ...boxes, ...(then ? [go] : [])),
+    el("div", { className: "scope" }, heading("Choose PRs, bottom to top"), ...boxes, ...(then ? [goButtons(then)] : [])),
   ];
 }
 
@@ -978,16 +986,16 @@ type MenuPreset = Preset & { description?: string; argumentHint?: string };
 
 // Fills the composer with a preset over its scope, and points ＋ New at the topmost PR in it.
 // A command first opens its form in the menu, under `anchor`; the form comes back with its `args`.
-function runPreset(x: MenuPreset, anchor: HTMLElement, args?: string) {
+function runPreset(x: MenuPreset, anchor: HTMLElement, args?: string, fresh = false) {
   const p = pr!;
   if (x.scope === "ask" && stackNumbers().length > 1)
-    return void openMenu(scopeBtn, async () => [heading(`${x.label}: which PRs?`), ...scopeMenu(() => runPreset({ ...x, scope: undefined }, scopeBtn))], false);
+    return void openMenu(scopeBtn, async () => [heading(`${x.label}: which PRs?`), ...scopeMenu((f) => runPreset({ ...x, scope: undefined }, scopeBtn, undefined, f))], false);
   const prs = presetScope(x, stackNumbers(), picked, p.number);
   picked = new Set(prs);
   renderScope();
   if (x.command && args === undefined) return closeMenu(), void openMenu(anchor, () => commandForm(x, anchor, prs), false);
   const checks = checksText(prs.map((n) => ({ number: n, checks: ghPr(n)?.checks })));
-  act(presetText(x, { pr: `#${p.number}`, url: prUrl(p), prs: prLines(p, prs), checks }, args ?? scopeText(prs)), newDefaultsFor(x, prs));
+  act(presetText(x, { pr: `#${p.number}`, url: prUrl(p), prs: prLines(p, prs), checks }, args ?? scopeText(prs)), newDefaultsFor(x, prs), fresh);
 }
 
 // A command's arguments as controls, the target scope resolves to, a preview of the command line, and Fill composer.
@@ -1008,18 +1016,21 @@ async function commandForm(x: MenuPreset, anchor: HTMLElement, prs: number[]) {
     return r.args;
   };
   const controls = argControls(spec, { ...x.args, ...last }, read);
-  const go = el("button", { className: "primary", textContent: "Fill composer" });
-  go.onclick = () => {
+  const go = goButtons((fresh) => {
     void chrome.storage.local.set({ [key]: readArgs(controls) });
-    runPreset({ ...x, scope: undefined }, anchor, read());
-  };
+    runPreset({ ...x, scope: undefined }, anchor, read(), fresh);
+  });
   read();
   return [heading(x.label), el("div", { className: "cmd-form", title: x.argumentHint ?? "" }, controls, target, note, preview, go)];
 }
 
 // Favorites, presets and commands alike, on top; then the presets; then the other commands.
 function presetMenu(anchor: HTMLElement, own: MenuPreset[], commands: MenuPreset[]) {
-  const item = (x: MenuPreset) => menuItem(`${x.favorite ? "★ " : ""}${x.label}`, x.provider, () => runPreset(x, anchor), x.description);
+  const item = (x: MenuPreset) => {
+    const fresh = el("button", { className: "menu-new", textContent: "＋ New", title: "In a new session" });
+    fresh.onclick = () => runPreset(x, anchor, undefined, true);
+    return el("div", { className: "menu-row" }, menuItem(`${x.favorite ? "★ " : ""}${x.label}`, x.provider, () => runPreset(x, anchor), x.description), fresh);
+  };
   const [mine, found] = [arrange(own), arrange(commands)];
   const rest = found.filter((x) => !x.favorite);
   return [
@@ -1046,8 +1057,8 @@ reviewBtn.onclick = () =>
 // One CI preset runs straight away; several get a menu.
 fixCiBtn.onclick = async () => {
   const ci = arrange((await loadPresets()).presets.filter((x) => x.kind === "ci"));
-  if (ci.length > 1) return void openMenu(fixCiBtn, async () => presetMenu(fixCiBtn, ci, []));
-  runPreset(ci[0] ?? DEFAULT_PRESETS.find((x) => x.kind === "ci")!, fixCiBtn);
+  // Always a menu, so every preset offers the composer or a new session.
+  void openMenu(fixCiBtn, async () => presetMenu(fixCiBtn, ci.length ? ci : DEFAULT_PRESETS.filter((x) => x.kind === "ci"), []));
 };
 
 feedbackBtn.onclick = () =>
@@ -1383,3 +1394,11 @@ daemon.subscribeConnectionStatus((s) => {
     );
 });
 daemon.connect().catch(() => {});
+
+// Lets the background hide the pages' floating session button while this panel is open; reconnects if the worker restarts.
+function holdPanelPort() {
+  void chrome.windows.getCurrent().then((w) => {
+    chrome.runtime.connect({ name: `panel:${w.id}` }).onDisconnect.addListener(() => setTimeout(holdPanelPort, 1000));
+  });
+}
+holdPanelPort();

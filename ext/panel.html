@@ -44,7 +44,12 @@
     .args input[type=checkbox] { accent-color: var(--accent); margin: 0; }
     .cmd-form .menu-note { padding: 0; }
     .cmd-form .preview { font: 11px ui-monospace, Menlo, monospace; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 3px 5px; white-space: pre-wrap; word-break: break-all; }
-    .cmd-form .primary { align-self: flex-end; background: var(--accent); border-color: var(--accent); color: #fff; }
+    .go-row { display: flex; gap: 6px; justify-content: flex-end; margin-top: 4px; }
+    .go-row .primary, .cmd-form .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .menu-row { display: flex; align-items: center; }
+    .menu-row .menu-item { flex: 1; min-width: 0; }
+    .menu-new { border: 0; background: none; color: var(--muted); font-size: 11px; padding: 2px 6px; border-radius: 5px; white-space: nowrap; }
+    .menu-new:hover, .menu-new:focus-visible { color: var(--fg); background: color-mix(in srgb, var(--accent) 18%, transparent); }
     #settings .menu-link { padding: 0; }
     #status { padding: 4px 10px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; }
     #status a { color: var(--accent); }
@@ -157,7 +162,7 @@
     <button id="scope-btn">This PR ▾</button>
     <span class="sep"></span>
     <button id="review-btn" title="Review this PR or its stack">Review ▾</button>
-    <button id="fix-ci-btn">Fix CI</button>
+    <button id="fix-ci-btn">Fix CI ▾</button>
     <button id="feedback-btn" title="Evaluate or address review feedback">Feedback ▾</button>
     <div id="menu" hidden></div>
   </div>

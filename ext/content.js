@@ -3,8 +3,9 @@ let pill = null;
 // { title, marked, icon, links: [[link, originalHref]], added } while the tab is marked.
 let marked = null;
 
+// Hidden while the side panel is open in this window: it already shows these sessions.
 function render(res) {
-  if (!res?.count) {
+  if (!res?.count || res.panelOpen) {
     pill?.remove();
     pill = null;
     return;
