@@ -1,6 +1,6 @@
 import { createPaseoApi, type PaseoAgent } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { agentsOnPr, alertFor, DAEMON_URL, parsePr, SETTINGS, type Alert, type Pr, type Workspace } from "./pr";
+import { agentsOnPr, alertFor, DAEMON_URL, parsePr, rowPr, SETTINGS, type Alert, type Pr, type Workspace } from "./pr";
 
 void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
@@ -87,8 +87,22 @@ const onPr = (list: PaseoAgent[], pr: Pr) => agentsOnPr([...workspaces.values()]
 
 function counts(pr: Pr) {
   const on = onPr([...agents.values()], pr);
-  return { count: on.length, running: on.filter((a) => a.status === "running").length };
+  return { count: on.length, running: on.filter((a) => a.status === "running").length, needsYou: on.filter((a) => a.pendingPermissions?.length).length };
 }
+
+// Inbox and PR-list tabs (ext/inbox.js): the rows they last sent, to push each row's counts as sessions change.
+// ponytail: in memory, so after a worker restart a tab gets no pushes until its rows change.
+const inboxTabs = new Map<number, { seq: number; rows: { pr: Pr | null; url?: string }[] }>();
+chrome.tabs.onRemoved.addListener((id) => inboxTabs.delete(id));
+
+// Aligned with the rows; null for a row with no sessions. `url` is what the pill hands to "open-pr".
+const rowStates = ({ seq, rows }: { seq: number; rows: { pr: Pr | null; url?: string }[] }) => ({
+  seq,
+  states: rows.map(({ pr, url }) => {
+    const c = pr && counts(pr);
+    return pr && c?.count ? { ...c, url: parsePr(url) ? url : `https://app.graphite.com/github/pr/${pr.owner}/${pr.repo}/${pr.number}` } : null;
+  }),
+});
 
 // Chained so quick successive sends append instead of overwriting each other.
 let drafting = Promise.resolve();
@@ -118,6 +132,7 @@ function changed() {
   clearTimeout(pushTimer);
   pushTimer = setTimeout(async () => {
     for (const { id, pr } of await prTabs()) void send(id, { type: "pr-sessions", ...counts(pr) });
+    for (const [id, tab] of inboxTabs) void send(id, { type: "inbox-sessions", ...rowStates(tab) });
   }, 300);
 }
 
@@ -163,6 +178,21 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.type === "open-panel" && sender.tab) {
     void chrome.sidePanel.open({ windowId: sender.tab.windowId });
     return;
+  }
+  // A pill on an inbox row: open the panel on that PR, pinned, without navigating the page. The panel reads the key and removes it.
+  if (msg.type === "open-pr" && sender.tab && parsePr(msg.url)) {
+    void chrome.sidePanel.open({ windowId: sender.tab.windowId });
+    void chrome.storage.session.set({ [`open:${sender.tab.windowId}`]: { url: msg.url, at: Date.now() } });
+    return;
+  }
+  if (msg.type === "inbox-rows" && sender.tab?.id !== undefined && Array.isArray(msg.rows)) {
+    const tab = { seq: Number(msg.seq), rows: (msg.rows as { href?: string; sub?: string }[]).map((r) => ({ pr: rowPr(r.href, r.sub), url: r.href })) };
+    const id = sender.tab.id;
+    if (tab.rows.length) inboxTabs.set(id, tab);
+    else inboxTabs.delete(id);
+    const live = async () => (await ready()) && (await Promise.all([agentsLive, workspacesLive])).every(Boolean) ? rowStates(tab) : null;
+    live().then(reply, () => reply(null));
+    return true;
   }
   if (msg.type === "pr-sessions") {
     const pr = parsePr(msg.url);

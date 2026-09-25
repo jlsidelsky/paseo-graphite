@@ -5,6 +5,7 @@ import { DAEMON_URL } from "./pr";
 
 type Provider = Awaited<ReturnType<ReturnType<typeof createPaseoApi>["providers"]["snapshot"]>>["entries"][number];
 type Settings = Override & { provider?: string };
+import { fillSettings, inboxStyles, loadInboxSettings, orderSections } from "./inbox-view";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const kindsBox = $<HTMLDivElement>("kinds");
@@ -223,4 +224,10 @@ void Promise.all([loadStore(chrome.storage.sync), chrome.storage.local.get<{ dis
   discovered = local.discovered;
   providers = p;
   render(s);
+});
+
+// Inbox: section names come from the last inbox the panel saw.
+void Promise.all([loadInboxSettings(), chrome.storage.local.get("inboxSections")]).then(([s, { inboxSections }]) => {
+  inboxStyles();
+  fillSettings($("inbox-options"), orderSections(Array.isArray(inboxSections) ? inboxSections : [], s), s);
 });

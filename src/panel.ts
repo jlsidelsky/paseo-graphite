@@ -23,6 +23,7 @@ import {
   type Preset,
 } from "./actions";
 import { diffStrings, parseUnifiedDiff, type DiffLine } from "./diff";
+import { groupInbox, INBOX_DEFAULTS, loadInboxSettings, pageSections, renderInbox, type InboxRow } from "./inbox-view";
 import { isAnswered, parseQuestions, questionResponse, showsText, type Question } from "./question";
 import {
   agentsOnPr,
@@ -36,6 +37,7 @@ import {
   parsePr,
   parseTicket,
   prLabel,
+  rowPr,
   SETTINGS,
   stackOf,
   ticketBranch,
@@ -114,6 +116,9 @@ let prefill = "";
 let agentsLive: Promise<unknown> | undefined;
 let allTimer: ReturnType<typeof setTimeout> | undefined;
 let lastStatus = "";
+// The active tab's inbox rows (Graphite inbox, GitHub PR list), shown instead of all sessions; empty elsewhere.
+let inbox: InboxRow[] = [];
+let inboxSettings = INBOX_DEFAULTS;
 
 const isPrWorkspace = (w: Workspace) => onPr(w, pr);
 
@@ -130,7 +135,7 @@ function markdown(text: string) {
 }
 
 const viewKey = (p = pr, t = ticket) => (p ? prLabel(p) : t ? ticketLabel(t.id) : "all");
-const viewName = () => (pr ? `PR #${pr.number}` : ticket ? ticket.id : "All sessions");
+const viewName = () => (pr ? `PR #${pr.number}` : ticket ? ticket.id : inbox.length ? "Inbox" : "All sessions");
 
 function setStatus(text: string) {
   lastStatus = text;
@@ -231,9 +236,9 @@ function renderAll() {
   // The picker is hidden behind the new-session form; closing the form reloads it.
   if (isCreating()) return;
   const option = (a: PaseoAgent) => el("option", { value: a.id, textContent: [optionLabel(a), whereOf(a)].filter(Boolean).join(" · ") });
-  const shown = groups().filter(([, list]) => list.length);
+  const shown = inbox.length ? inboxPicker() : groups().filter(([, list]) => list.length);
   agentSelect.replaceChildren(
-    el("option", { value: "", textContent: "All sessions" }),
+    el("option", { value: "", textContent: inbox.length ? "Inbox" : "All sessions" }),
     ...shown.map(([label, list]) => el("optgroup", { label }, ...list.map(option))),
   );
   const keep = shown.some(([, list]) => list.some((a) => a.id === selectedId)) ? selectedId : null;
@@ -253,6 +258,7 @@ function overview() {
 
 function selectAgent(id: string | null) {
   if (id === selectedId && unsubscribeTimeline) return;
+  const [same, top] = [id === selectedId, timeline.scrollTop];
   unsubscribeTimeline?.();
   unsubscribeTimeline = null;
   selectedId = id;
@@ -269,8 +275,12 @@ function selectAgent(id: string | null) {
     timeline.append(
       pr || ticket
         ? el("div", { className: "empty", textContent: `No Paseo sessions on this ${pr ? "PR" : "ticket"} yet. Start one with ＋ New.` })
-        : overview(),
+        : inbox.length
+          ? inboxList()
+          : overview(),
     );
+    // Re-rendering the same list on a live update keeps its scroll position.
+    if (same) timeline.scrollTop = top;
     return;
   }
   const serverId = daemon.getLastServerInfoMessage()?.serverId;
@@ -1016,7 +1026,12 @@ async function syncActiveTab(force = false) {
   if (pinned) return force ? loadSessions() : undefined;
   viewUrl = tab?.url;
   const nextPr = parsePr(tab?.url);
-  await switchTo(nextPr, nextPr ? null : parseTicket(tab?.url), force);
+  const nextTicket = nextPr ? null : parseTicket(tab?.url);
+  const had = inbox.length;
+  inbox = nextPr || nextTicket || tab?.id === undefined ? [] : await inboxOf(tab.id);
+  await switchTo(nextPr, nextTicket, force);
+  // Inbox and all sessions share the "all" context, so switchTo doesn't re-render between them.
+  if (!pr && !ticket && (had || inbox.length)) renderAll();
 }
 
 async function switchTo(nextPr: Pr | null, nextTicket: Ticket | null, force = false) {
@@ -1034,6 +1049,64 @@ async function switchTo(nextPr: Pr | null, nextTicket: Ticket | null, force = fa
   }
   await loadSessions();
 }
+
+// ---- Inbox view (src/inbox-view.ts): asked of the tab's ext/inbox.js, which also sends its rows whenever they change. ----
+
+const inboxRows = (raw: unknown): InboxRow[] =>
+  (Array.isArray(raw) ? raw : []).flatMap((r) => {
+    const p = rowPr(r?.href, r?.sub);
+    return p ? [{ pr: p, title: String(r.title ?? ""), section: String(r.section ?? ""), sectionIndex: Number(r.sectionIndex) || 0 }] : [];
+  });
+
+const inboxOf = async (tabId: number) => inboxRows((await chrome.tabs.sendMessage(tabId, { type: "inbox-rows" }).catch(() => null))?.rows);
+
+// Archived sessions are only in `everyone`; sessions started since loading only in `agents`.
+const sessionPool = () => [...new Map([...everyone, ...agents].map((a) => [a.id, a])).values()];
+const inboxSessions = (p: Pr) => agentsOnPr(workspaces, sessionPool(), p);
+
+const inboxPicker = () =>
+  groupInbox(inbox, inboxSessions, inboxSettings).flatMap((g) =>
+    g.prs.filter((x) => x.sessions.length).map((x) => [`#${x.row.pr.number} ${x.row.title}`, x.sessions] as const),
+  );
+
+const inboxList = () =>
+  renderInbox(inbox, inboxSessions, inboxSettings, {
+    pick: (a) => {
+      // Keeps the picker's selection (and the archived state) for sessions outside the all-sessions groups.
+      if (!agents.some((x) => x.id === a.id)) agents.push(a);
+      agentSelect.value = a.id;
+      selectAgent(a.id);
+    },
+    open: (p) => void openPr(p),
+  });
+
+// A PR from the inbox (its pill or its row in the Inbox view): show it here, pinned, without navigating the tab.
+async function openPr(p: Pr, url?: string) {
+  viewUrl = url;
+  pinned = true;
+  pinBtn.setAttribute("aria-pressed", "true");
+  await switchTo(p, null, true);
+}
+
+let knownSections = "";
+function setInbox(rows: InboxRow[]) {
+  inbox = rows;
+  // For the options page, which can't see the page.
+  const names = JSON.stringify(pageSections(rows));
+  if (rows.length && names !== knownSections) (knownSections = names), void chrome.storage.local.set({ inboxSections: JSON.parse(names) });
+  if (!pr && !ticket) renderAll();
+}
+
+chrome.runtime.onMessage.addListener((msg, sender) => {
+  if (msg?.type !== "inbox-rows" || !Array.isArray(msg.rows) || pinned || !sender.tab?.active) return;
+  const from = sender.tab.windowId;
+  void windowId.then((id) => from === id && setInbox(inboxRows(msg.rows)));
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "sync" && changes.inbox) void loadInboxSettings().then((s) => ((inboxSettings = s), inbox.length && !pr && !ticket && renderAll()));
+});
+void loadInboxSettings().then((s) => (inboxSettings = s));
 
 pinBtn.onclick = () => {
   pinned = !pinned;
@@ -1137,6 +1210,7 @@ openInPaseo.onclick = (e) => {
 const windowId = chrome.windows.getCurrent().then((w) => w.id);
 const draftKey = windowId.then((id) => `draft:${id}`);
 const startKey = windowId.then((id) => `start:${id}`);
+const openKey = windowId.then((id) => `open:${id}`);
 // ext/review.js hands over comments and diff lines; `intent` asks to evaluate or address a comment instead of just quoting it.
 async function takeDraft() {
   const key = await draftKey;
@@ -1162,7 +1236,17 @@ async function takeStart() {
   if (isCreating()) closeNewForm();
   await openNewForm();
 }
+// An inbox pill (ext/inbox.js → background "open-pr"): switch to that PR, pinned. A request the panel was too late for is dropped.
+async function takeOpen() {
+  const key = await openKey;
+  const open = (await chrome.storage.session.get<Record<string, { url?: string; at?: number }>>(key))[key];
+  if (!open) return;
+  await chrome.storage.session.remove(key);
+  const p = parsePr(open.url);
+  if (p && Date.now() - (open.at ?? 0) < 60_000) await openPr(p, open.url);
+}
 chrome.storage.session.onChanged.addListener(async (changes) => {
+  if (changes[await openKey]?.newValue && connected()) void takeOpen();
   if (changes[await draftKey]?.newValue) void takeDraft();
   if (changes[await startKey]?.newValue && connected()) void takeStart();
 });
@@ -1206,7 +1290,7 @@ chrome.tabs.onUpdated.addListener((_id, info, tab) => {
 // The browser hides the daemon's 403, so a disallowed origin looks like any other failed connect.
 daemon.subscribeConnectionStatus((s) => {
   if (s.status === "connected") {
-    void syncActiveTab(true).then(takeStart);
+    void syncActiveTab(true).then(takeStart).then(takeOpen);
     // The daemon only sends agent updates once asked; the subscription re-subscribes after reconnects by itself.
     agentsLive ??= paseo.agents.list({ subscribe: {} }).catch(() => (agentsLive = undefined));
   }

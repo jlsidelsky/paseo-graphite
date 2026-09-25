@@ -63,7 +63,8 @@
       ],
       "js": [
         "content.js",
-        "review.js"
+        "review.js",
+        "inbox.js"
       ]
     },
     {
