@@ -1,12 +1,14 @@
 // The panel's Inbox view (active tab is a Graphite inbox or GitHub PR list): the page's PRs by section, each with its sessions,
 // plus the inbox settings form shared with the options page. Only type imports, so scripts/inbox.check.ts can load it in Node.
 import type { PaseoAgent as Agent } from "@getpaseo/client";
-import type { Pr } from "./pr";
+import type { Pr, RowStack } from "./pr";
 
-export type InboxRow = { pr: Pr; title: string; section: string; sectionIndex: number };
+// `href` and `sub` as the page sent them, for the background's stack lookup.
+export type InboxRow = { pr: Pr; title: string; section: string; sectionIndex: number; href?: string; sub?: string };
 type Status = "needs" | "running" | "idle" | "archived";
-export type InboxSettings = { hidden: string[]; order: string[]; sort: "page" | "urgency"; onlyWithSessions: boolean; show: Record<Status, boolean> };
-export type InboxGroup = { section: string; prs: { row: InboxRow; sessions: Agent[] }[] };
+export type InboxSettings = { hidden: string[]; order: string[]; sort: "page" | "urgency"; onlyWithSessions: boolean; groupStacks: boolean; show: Record<Status, boolean> };
+// A stack's shown members sit together, bottom to top, where its first one would be; `pos` counts from the bottom.
+export type InboxGroup = { section: string; prs: { row: InboxRow; sessions: Agent[]; stack?: { key: string; pos: number; size: number } }[] };
 
 // chrome.storage.sync key `inbox`.
 export const INBOX_DEFAULTS: InboxSettings = {
@@ -14,6 +16,7 @@ export const INBOX_DEFAULTS: InboxSettings = {
   order: [],
   sort: "page",
   onlyWithSessions: false,
+  groupStacks: true,
   show: { needs: true, running: true, idle: true, archived: false },
 };
 
@@ -37,8 +40,20 @@ export function orderSections(names: string[], s: InboxSettings) {
   return [...names].sort((a, b) => at(a) - at(b));
 }
 
-// `sessionsOf` gives a PR's sessions newest first (agentsOnPr).
-export function groupInbox(rows: InboxRow[], sessionsOf: (pr: Pr) => Agent[], s: InboxSettings): InboxGroup[] {
+// `sessionsOf` gives a PR's sessions newest first (agentsOnPr); `stacks` index into `rows` (groupStacks).
+export function groupInbox(rows: InboxRow[], sessionsOf: (pr: Pr) => Agent[], s: InboxSettings, stacks: RowStack[] = []): InboxGroup[] {
+  const inStack = new Map(s.groupStacks ? stacks.flatMap((st) => st.rows.map((i, order) => [rows[i], { key: st.key, order }] as const)) : []);
+  const gather = (prs: InboxGroup["prs"]) => {
+    const done = new Set<string>();
+    return prs.flatMap((p) => {
+      const key = inStack.get(p.row)?.key;
+      if (!key) return [p];
+      if (done.has(key)) return [];
+      done.add(key);
+      const members = prs.filter((x) => inStack.get(x.row)?.key === key).sort((a, b) => inStack.get(a.row)!.order - inStack.get(b.row)!.order);
+      return members.length < 2 ? members : members.map((x, pos) => ({ ...x, stack: { key, pos, size: members.length } }));
+    });
+  };
   const rank = (p: InboxGroup["prs"][number]) => (p.sessions.length ? RANK[statusOf(p.sessions[0])] : 4);
   return orderSections(pageSections(rows), s)
     .filter((section) => !s.hidden.includes(section))
@@ -49,7 +64,7 @@ export function groupInbox(rows: InboxRow[], sessionsOf: (pr: Pr) => Agent[], s:
         .filter((p) => !s.onlyWithSessions || p.sessions.length);
       // Needs you, then running, then most recently active; PRs without sessions keep the page's order at the end.
       if (s.sort === "urgency") prs.sort((a, b) => rank(a) - rank(b) || (b.sessions[0]?.updatedAt ?? "").localeCompare(a.sessions[0]?.updatedAt ?? ""));
-      return { section, prs };
+      return { section, prs: gather(prs) };
     })
     .filter((g) => g.prs.length);
 }
@@ -93,6 +108,7 @@ export function fillSettings(box: HTMLElement, sections: string[], s: InboxSetti
       : [el("small", { textContent: "Open the Graphite inbox with the side panel once to list its sections here." })]),
     el("label", {}, "Sort PRs ", sort),
     check("only", "Only PRs with sessions", s.onlyWithSessions, (v) => (s.onlyWithSessions = v)),
+    check("stacks", "Group stacks in the inbox", s.groupStacks, (v) => (s.groupStacks = v)),
     el("b", { textContent: "Show sessions that are" }),
     el("div", { className: "inbox-statuses" }, ...(Object.keys(STATUS_LABELS) as Status[]).map((st) => check(`st:${st}`, STATUS_LABELS[st], s.show[st], (v) => (s.show[st] = v)))),
   );
@@ -115,6 +131,9 @@ const CSS_TEXT = `
 .inbox-pr { border: 0; background: none; padding: 4px 0 0; text-align: left; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inbox-pr:hover { color: var(--accent); }
 .inbox .session-row { margin-left: 10px; }
+.inbox-stack { display: block; width: 100%; border: 0; background: none; padding: 4px 0 0; text-align: left; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-stack span { color: var(--muted); font-weight: 400; }
+.inbox-stack-members { border-left: 2px solid var(--accent); padding-left: 8px; margin: 2px 0 0 3px; }
 .inbox .none { color: var(--muted); font-size: 12px; margin-left: 10px; }
 .session-row .dot-needs { color: var(--accent); } .session-row .dot-running { color: #2da44e; }
 `;
@@ -130,7 +149,9 @@ export function renderInbox(
   rows: InboxRow[],
   sessionsOf: (pr: Pr) => Agent[],
   s: InboxSettings,
-  on: { pick: (a: Agent) => void; open: (pr: Pr) => void },
+  on: { pick: (a: Agent) => void; open: (pr: Pr) => void; toggle: (stack: string, open: boolean) => void },
+  stacks: RowStack[] = [],
+  expanded = new Set<string>(),
 ) {
   inboxStyles();
   if (!settings) {
@@ -151,13 +172,25 @@ export function renderInbox(
     btn.onclick = () => on.pick(a);
     return btn;
   };
-  const groups = groupInbox(rows, sessionsOf, s);
+  const prNodes = ({ row, sessions }: InboxGroup["prs"][number]) => {
+    const pr = el("button", { className: "inbox-pr", textContent: `#${row.pr.number} ${row.title}`, title: `Show ${row.pr.owner}/${row.pr.repo} #${row.pr.number} here, pinned` });
+    pr.onclick = () => on.open(row.pr);
+    return [pr, ...(sessions.length ? sessions.map(session) : [el("div", { className: "none", textContent: "No sessions" })])];
+  };
+  const groups = groupInbox(rows, sessionsOf, s, stacks);
   const nodes = groups.flatMap((g) => [
     el("h4", { textContent: `${g.section} · ${g.prs.length}` }),
-    ...g.prs.flatMap(({ row, sessions }) => {
-      const pr = el("button", { className: "inbox-pr", textContent: `#${row.pr.number} ${row.title}`, title: `Show ${row.pr.owner}/${row.pr.repo} #${row.pr.number} here, pinned` });
-      pr.onclick = () => on.open(row.pr);
-      return [pr, ...(sessions.length ? sessions.map(session) : [el("div", { className: "none", textContent: "No sessions" })])];
+    ...g.prs.flatMap((p) => {
+      if (!p.stack) return prNodes(p);
+      if (p.stack.pos) return [];
+      const { key, size } = p.stack;
+      const members = g.prs.filter((x) => x.stack?.key === key);
+      const top = members[size - 1].row;
+      const open = expanded.has(key);
+      const head = el("button", { className: "inbox-stack", title: open ? "Collapse this stack" : "Expand this stack" }, `${open ? "▾" : "▸"} Stack · ${size} PRs `, el("span", { textContent: `#${top.pr.number} ${top.title}` }));
+      head.setAttribute("aria-expanded", String(open));
+      head.onclick = () => on.toggle(key, !open);
+      return open ? [head, el("div", { className: "inbox-stack-members" }, ...members.flatMap(prNodes))] : [head];
     }),
   ]);
   return el(

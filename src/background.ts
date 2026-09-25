@@ -1,6 +1,6 @@
 import { createPaseoApi, type PaseoAgent } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { agentsOnPr, alertFor, DAEMON_URL, parsePr, rowPr, SETTINGS, type Alert, type Pr, type Workspace } from "./pr";
+import { agentsOnPr, alertFor, DAEMON_URL, groupStacks, isRepo, parsePr, rowAuthor, rowPr, SETTINGS, type Alert, type Pr, type Workspace } from "./pr";
 
 void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
@@ -104,6 +104,52 @@ const rowStates = ({ seq, rows }: { seq: number; rows: { pr: Pr | null; url?: st
   }),
 });
 
+// Inbox stacks: each row's base and head branch, from GitHub via Paseo, in a workspace of that repo (none: not grouped).
+// One search per author and repo covers most rows; a row it misses gets its own. Kept 5 minutes, or until the row changes.
+type Branches = { base: string; head: string } | null;
+type ForgePr = { number: number; baseRefName?: string; headRefName?: string };
+const FRESH = 5 * 60_000;
+const branchCache = new Map<string, { at: number; sig: string; p: Promise<Branches> }>();
+const authorCache = new Map<string, { at: number; p: Promise<ForgePr[]> }>();
+
+function cached<T>(cache: Map<string, { at: number; p: Promise<T> }>, key: string, load: () => Promise<T>, extra = {}) {
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < FRESH) return hit.p;
+  // A failed search isn't kept.
+  const p: Promise<T> = load().catch((e) => (cache.get(key)?.p === p && cache.delete(key), Promise.reject(e)));
+  cache.set(key, { at: Date.now(), p, ...extra });
+  return p;
+}
+
+// Rows as ext/inbox.js sends them; `stacks[].rows` index into them.
+async function inboxStacks(raw: { href?: string; sub?: string; title?: string; section?: string }[]) {
+  if (!(await ready()) || !(await workspacesLive)) return null;
+  const started = Date.now();
+  const rows = raw.map((r) => ({ pr: rowPr(r?.href, r?.sub), author: rowAuthor(r?.sub), sig: `${r?.title}\n${r?.sub}`, section: String(r?.section ?? "") }));
+  const search = (cwd: string, query: string, limit: number) =>
+    daemon.searchForge({ cwd, query, limit, kinds: ["pr"] }).then((r) => r.items as ForgePr[]);
+  const branches = async ({ pr, author, sig }: (typeof rows)[number]): Promise<Branches> => {
+    const cwd = pr && [...workspaces.values()].find((w) => isRepo(w, pr))?.workspaceDirectory;
+    if (!pr || !cwd) return null;
+    const key = `${pr.owner}/${pr.repo}#${pr.number}`;
+    const byAuthor = `${pr.owner}/${pr.repo}:${author}`;
+    // A changed row (new title, labels, stack position) refetches its author's PRs too.
+    const hit = branchCache.get(key);
+    if (hit && hit.sig !== sig) {
+      branchCache.delete(key);
+      if ((authorCache.get(byAuthor)?.at ?? started) < started) authorCache.delete(byAuthor);
+    }
+    return cached(branchCache, key, async () => {
+      // The search caps at 50; an author with more open PRs falls back per PR.
+      const mine = author ? await cached(authorCache, byAuthor, () => search(cwd, `is:pr is:open author:${author}`, 50)) : [];
+      const i = mine.find((i) => i.number === pr.number) ?? (await search(cwd, String(pr.number), 10)).find((i) => i.number === pr.number);
+      return i?.baseRefName && i.headRefName ? { base: i.baseRefName, head: i.headRefName } : null;
+    }, { sig });
+  };
+  const info = await Promise.all(rows.map((r) => branches(r).catch(() => null)));
+  return { stacks: groupStacks(rows.map((r, i) => (r.pr && info[i] ? { ...r.pr, section: r.section, ...info[i] } : null))) };
+}
+
 // Chained so quick successive sends append instead of overwriting each other.
 let drafting = Promise.resolve();
 
@@ -192,6 +238,10 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     else inboxTabs.delete(id);
     const live = async () => (await ready()) && (await Promise.all([agentsLive, workspacesLive])).every(Boolean) ? rowStates(tab) : null;
     live().then(reply, () => reply(null));
+    return true;
+  }
+  if (msg.type === "inbox-stacks" && Array.isArray(msg.rows)) {
+    inboxStacks(msg.rows).then(reply, () => reply(null));
     return true;
   }
   if (msg.type === "pr-sessions") {

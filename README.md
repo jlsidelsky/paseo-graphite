@@ -21,6 +21,8 @@ A floating button on the PR page shows how many sessions it has, updated live, a
 
 On the inbox and PR lists, each PR with sessions gets a pill in its title cell, updated live: **needs you**, **● running** (with a count above one), or **N sessions**. Clicking it opens the panel on that PR, pinned, without leaving the inbox; **↗ PR #N** goes to the PR, and unpinning goes back to the inbox list.
 
+On Graphite's inbox, PRs in the same stack fold into one row: the stack's first row in the section gets **▸ Stack · N**, and the other members' rows are hidden. Expanded, the whole stack is listed under it, bottom to top, each with its position, link and pill. The panel's Inbox view groups them the same way, and remembers the same expanded stacks. A stack is PRs whose base branch is another listed PR's head, found through Paseo's GitHub search (one search per author, cached for 5 minutes), so it needs a Paseo workspace in that repo; without one, its PRs aren't grouped. Stacks are grouped per section: members that Graphite puts in different sections group separately. Turn it off with **Group stacks in the inbox** under ⚙ Customize or on the options page.
+
 On a Linear issue, **▶ Paseo** next to the issue's copy-link buttons opens the panel's new-session form for that ticket (top right of the window if Linear's toolbar can't be found).
 
 When a session on a PR you have open finishes a turn or needs you, the tab gets a dot on its favicon and title, and Chrome shows a notification that opens the panel on that PR. Both can be turned off under ⚙ in the panel.

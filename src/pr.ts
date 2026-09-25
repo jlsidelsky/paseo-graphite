@@ -149,3 +149,32 @@ export function rowPr(href: string | undefined, text: string | undefined): Pr | 
   const m = text?.match(/(?:^|[\s·])([\w.-]+)\/([\w.-]+)\s+#(\d+)(?!\d)/);
   return parsePr(href) ?? (m ? { owner: m[1].toLowerCase(), repo: m[2].toLowerCase(), number: Number(m[3]) } : null);
 }
+
+// The PR author: the login before "·" at the start of an inbox row's subtitle.
+export const rowAuthor = (text: string | undefined) => text?.match(/^\s*([\w.[\]-]+)\s+·/)?.[1];
+
+export type StackRow = { section: string; owner: string; repo: string; number: number; base: string; head: string };
+export type RowStack = { key: string; rows: number[] };
+
+// Stacks among one inbox's rows: within a section, rows linked by a base that's another row's head (same repo), each
+// ordered bottom to top. `rows` are indices into the input; `key` names the stack by its bottom branch. Rows alone stay out.
+export function groupStacks(rows: (StackRow | null)[]): RowStack[] {
+  const at = (i: number) => rows[i] as StackRow;
+  const repo = (r: StackRow) => `${r.section}\n${r.owner}/${r.repo}`;
+  const linked = (a: StackRow, b: StackRow) => repo(a) === repo(b) && (a.base === b.head || b.base === a.head);
+  const left = new Set(rows.flatMap((r, i) => (r ? [i] : [])));
+  const out: RowStack[] = [];
+  for (const start of left) {
+    const comp = [start];
+    left.delete(start);
+    // ponytail: O(n²) per section; fine for an inbox's few dozen rows.
+    for (let k = 0; k < comp.length; k++)
+      for (const j of left) if (linked(at(comp[k]), at(j))) comp.push(j), left.delete(j);
+    if (comp.length < 2) continue;
+    const ordered = orderStack(comp.map((i) => ({ i, number: at(i).number, baseRefName: at(i).base, headRefName: at(i).head }))).map((x) => x.i);
+    if (ordered.length < 2) continue;
+    const bottom = at(ordered[0]);
+    out.push({ key: `${bottom.owner}/${bottom.repo}:${bottom.head}`, rows: ordered });
+  }
+  return out;
+}

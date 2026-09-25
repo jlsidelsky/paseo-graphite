@@ -44,6 +44,7 @@ import {
   ticketLabel,
   ticketTitle,
   type Pr,
+  type RowStack,
   type StackPr,
   type Ticket,
   type Workspace,
@@ -119,6 +120,10 @@ let lastStatus = "";
 // The active tab's inbox rows (Graphite inbox, GitHub PR list), shown instead of all sessions; empty elsewhere.
 let inbox: InboxRow[] = [];
 let inboxSettings = INBOX_DEFAULTS;
+// The inbox's stacks from the background, as indices into the rows they were asked for (kept across row changes until the
+// next answer); expanded ones by key, shared with ext/inbox.js.
+let inboxStacks: { rows: InboxRow[]; stacks: RowStack[] } = { rows: [], stacks: [] };
+let expandedStacks = new Set<string>();
 
 const isPrWorkspace = (w: Workspace) => onPr(w, pr);
 
@@ -1029,6 +1034,7 @@ async function syncActiveTab(force = false) {
   const nextTicket = nextPr ? null : parseTicket(tab?.url);
   const had = inbox.length;
   inbox = nextPr || nextTicket || tab?.id === undefined ? [] : await inboxOf(tab.id);
+  void loadStacks();
   await switchTo(nextPr, nextTicket, force);
   // Inbox and all sessions share the "all" context, so switchTo doesn't re-render between them.
   if (!pr && !ticket && (had || inbox.length)) renderAll();
@@ -1055,7 +1061,7 @@ async function switchTo(nextPr: Pr | null, nextTicket: Ticket | null, force = fa
 const inboxRows = (raw: unknown): InboxRow[] =>
   (Array.isArray(raw) ? raw : []).flatMap((r) => {
     const p = rowPr(r?.href, r?.sub);
-    return p ? [{ pr: p, title: String(r.title ?? ""), section: String(r.section ?? ""), sectionIndex: Number(r.sectionIndex) || 0 }] : [];
+    return p ? [{ pr: p, title: String(r.title ?? ""), section: String(r.section ?? ""), sectionIndex: Number(r.sectionIndex) || 0, href: r.href, sub: r.sub }] : [];
   });
 
 const inboxOf = async (tabId: number) => inboxRows((await chrome.tabs.sendMessage(tabId, { type: "inbox-rows" }).catch(() => null))?.rows);
@@ -1065,7 +1071,7 @@ const sessionPool = () => [...new Map([...everyone, ...agents].map((a) => [a.id,
 const inboxSessions = (p: Pr) => agentsOnPr(workspaces, sessionPool(), p);
 
 const inboxPicker = () =>
-  groupInbox(inbox, inboxSessions, inboxSettings).flatMap((g) =>
+  groupInbox(inbox, inboxSessions, inboxSettings, currentStacks()).flatMap((g) =>
     g.prs.filter((x) => x.sessions.length).map((x) => [`#${x.row.pr.number} ${x.row.title}`, x.sessions] as const),
   );
 
@@ -1078,7 +1084,41 @@ const inboxList = () =>
       selectAgent(a.id);
     },
     open: (p) => void openPr(p),
-  });
+    toggle: (key, open) => void toggleStack(key, open),
+  }, currentStacks(), expandedStacks);
+
+const rowKey = (r: InboxRow) => `${r.section}\n${prLabel(r.pr)}`;
+function currentStacks(): RowStack[] {
+  const at = new Map(inbox.map((r, i) => [rowKey(r), i]));
+  return inboxStacks.stacks.map(({ key, rows }) => ({ key, rows: rows.flatMap((i) => at.get(rowKey(inboxStacks.rows[i])) ?? []) }));
+}
+
+let stacksAsked = "";
+async function loadStacks() {
+  const asked = inboxSettings.groupStacks ? inbox : [];
+  const ask = JSON.stringify(asked.map(({ href, sub, title, section }) => ({ href, sub, title, section })));
+  if (ask === stacksAsked) return;
+  stacksAsked = ask;
+  if (!asked.length) return void (inboxStacks = { rows: [], stacks: [] });
+  const res = await chrome.runtime.sendMessage({ type: "inbox-stacks", rows: JSON.parse(ask) }).catch(() => null);
+  if (ask !== stacksAsked) return;
+  // No answer (Paseo not reachable yet): ask again next time.
+  if (!Array.isArray(res?.stacks)) return void (stacksAsked = "");
+  inboxStacks = { rows: asked, stacks: res.stacks };
+  if (!pr && !ticket) renderAll();
+}
+
+// chrome.storage.local `stacks`: { [stack key]: true } for each expanded stack.
+// ponytail: keys of stacks that are gone stay; a few bytes each.
+async function toggleStack(key: string, open: boolean) {
+  const { stacks } = await chrome.storage.local.get("stacks");
+  const next: Record<string, true> = { ...(stacks as Record<string, true> | undefined) };
+  if (open) next[key] = true;
+  else delete next[key];
+  await chrome.storage.local.set({ stacks: next });
+}
+const setExpanded = (stacks: unknown) => (expandedStacks = new Set(Object.keys(stacks ?? {})));
+void chrome.storage.local.get("stacks").then(({ stacks }) => setExpanded(stacks));
 
 // A PR from the inbox (its pill or its row in the Inbox view): show it here, pinned, without navigating the tab.
 async function openPr(p: Pr, url?: string) {
@@ -1091,6 +1131,7 @@ async function openPr(p: Pr, url?: string) {
 let knownSections = "";
 function setInbox(rows: InboxRow[]) {
   inbox = rows;
+  void loadStacks();
   // For the options page, which can't see the page.
   const names = JSON.stringify(pageSections(rows));
   if (rows.length && names !== knownSections) (knownSections = names), void chrome.storage.local.set({ inboxSections: JSON.parse(names) });
@@ -1104,7 +1145,8 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "sync" && changes.inbox) void loadInboxSettings().then((s) => ((inboxSettings = s), inbox.length && !pr && !ticket && renderAll()));
+  if (area === "sync" && changes.inbox) void loadInboxSettings().then((s) => ((inboxSettings = s), void loadStacks(), inbox.length && !pr && !ticket && renderAll()));
+  if (area === "local" && changes.stacks) (setExpanded(changes.stacks.newValue), inbox.length && !pr && !ticket && renderAll());
 });
 void loadInboxSettings().then((s) => (inboxSettings = s));
 

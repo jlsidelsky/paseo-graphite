@@ -1,7 +1,7 @@
 // node scripts/inbox.check.ts
 import assert from "node:assert/strict";
 import { groupInbox, INBOX_DEFAULTS, orderSections, type InboxRow } from "../src/inbox-view.ts";
-import { rowPr } from "../src/pr.ts";
+import { groupStacks, rowAuthor, rowPr, type StackRow } from "../src/pr.ts";
 
 // Row → PR: the title link first, in either Graphite form or GitHub's, else the subtitle line.
 const pr = { owner: "acme", repo: "widgets", number: 101 };
@@ -42,4 +42,33 @@ assert.deepEqual(view({ sort: "urgency", hidden: ["Mine"], onlyWithSessions: tru
 assert.deepEqual(view({ show: { needs: true, running: true, idle: false, archived: true }, onlyWithSessions: true }), [["Review", [[2, "asks"], [3, "runs", "gone"]]]]);
 // A section the user hasn't placed yet goes after the ones they have, in page order.
 assert.deepEqual(orderSections(["Review", "Drafts", "New", "Mine"], { ...INBOX_DEFAULTS, order: ["Mine", "Review"] }), ["Mine", "Review", "Drafts", "New"]);
+
+// Author from the subtitle line.
+assert.equal(rowAuthor("alice · Acme/widgets #101 1 label 1/4"), "alice");
+assert.equal(rowAuthor("dependabot[bot] · acme/widgets #7"), "dependabot[bot]");
+assert.equal(rowAuthor(""), undefined);
+
+// Stacks: linked by base = another row's head, within one section and repo, bottom to top; rows alone stay out.
+const b = (number: number, base: string, head: string, section = "Review", repo = "widgets"): StackRow => ({ section, owner: "acme", repo, number, base, head });
+const stacks = (list: (StackRow | null)[]) => groupStacks(list).map((st) => [st.key, st.rows.map((i) => list[i]!.number)]);
+// A chain in any row order; a singleton and an unknown row (no branches) stay out.
+assert.deepEqual(stacks([b(103, "b", "c"), b(200, "main", "z"), null, b(101, "main", "a"), b(102, "a", "b")]), [["acme/widgets:a", [101, 102, 103]]]);
+// A fork: both children after their base, by number.
+assert.deepEqual(stacks([b(303, "a", "c"), b(302, "a", "b"), b(301, "main", "a")]), [["acme/widgets:a", [301, 302, 303]]]);
+// Two PRs sharing a head sit together, once each.
+assert.deepEqual(stacks([b(401, "main", "a"), b(402, "a", "b"), b(403, "main", "b"), b(404, "b", "c")]), [["acme/widgets:a", [401, 402, 403, 404]]]);
+// Split across sections: each section groups its own part; a lone part doesn't group.
+assert.deepEqual(stacks([b(501, "main", "a", "Review"), b(502, "a", "b", "Review"), b(503, "b", "c", "Mine"), b(504, "c", "d", "Mine"), b(505, "d", "e", "Drafts")]), [
+  ["acme/widgets:a", [501, 502]],
+  ["acme/widgets:c", [503, 504]],
+]);
+// Same branch names in another repo don't link.
+assert.deepEqual(stacks([b(601, "main", "a"), b(602, "a", "b", "Review", "gadgets")]), []);
+
+// The panel: a stack's members together where its first one is, bottom to top; off, the page's order.
+const srows = [row(10, "Review", 0), row(11, "Review", 0), row(12, "Review", 0), row(13, "Review", 0)];
+const st = [{ key: "k", rows: [3, 1] }];
+const sview = (o: object) => groupInbox(srows, of, { ...INBOX_DEFAULTS, ...o }, st)[0].prs.map((p) => [p.row.pr.number, p.stack?.pos ?? null]);
+assert.deepEqual(sview({}), [[10, null], [13, 0], [11, 1], [12, null]]);
+assert.deepEqual(sview({ groupStacks: false }), [[10, null], [11, null], [12, null], [13, null]]);
 console.log("inbox ok");
