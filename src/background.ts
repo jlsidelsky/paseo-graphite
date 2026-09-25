@@ -1,6 +1,6 @@
 import { createPaseoApi, type PaseoAgent } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { agentsOnPr, alertFor, ciAlertFor, DAEMON_URL, groupStacks, isRepo, parsePr, rowAuthor, rowPr, SETTINGS, type Alert, type Pr, type Workspace } from "./pr";
+import { agentsOnPr, alertFor, ciAlertFor, DAEMON_URL, groupStacks, isPrWorkspace, isRepo, parsePr, rowAuthor, rowPr, SETTINGS, type Alert, type Pr, type Workspace } from "./pr";
 
 void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
@@ -102,6 +102,10 @@ function counts(pr: Pr) {
   return { count: on.length, running: on.filter((a) => a.status === "running").length, needsYou: on.filter((a) => a.pendingPermissions?.length).length };
 }
 
+// The PR's checks as a workspace on it last saw them, for the PR page's Fix CI button.
+const ciOf = (pr: Pr) =>
+  [...workspaces.values()].filter((w) => isPrWorkspace(w, pr)).map((w) => w.githubRuntime?.pullRequest?.checksStatus).find((s) => s && s !== "none");
+
 // Inbox and PR-list tabs (ext/inbox.js): the rows they last sent, to push each row's counts as sessions change.
 // ponytail: in memory, so after a worker restart a tab gets no pushes until its rows change.
 const inboxTabs = new Map<number, { seq: number; rows: { pr: Pr | null; url?: string }[] }>();
@@ -199,7 +203,7 @@ chrome.runtime.onConnect.addListener((port) => {
 function changed() {
   clearTimeout(pushTimer);
   pushTimer = setTimeout(async () => {
-    for (const { id, pr, tab } of await prTabs()) void send(id, { type: "pr-sessions", ...counts(pr), panelOpen: openPanels.has(tab.windowId) });
+    for (const { id, pr, tab } of await prTabs()) void send(id, { type: "pr-sessions", ...counts(pr), ci: ciOf(pr), panelOpen: openPanels.has(tab.windowId) });
     for (const [id, tab] of inboxTabs) void send(id, { type: "inbox-sessions", ...rowStates(tab) });
   }, 300);
 }
@@ -245,7 +249,7 @@ function openCi(id: string, fixCi: boolean) {
   const [, windowId, url] = id.split("|");
   void chrome.sidePanel.open({ windowId: Number(windowId) });
   void chrome.windows.update(Number(windowId), { focused: true }).catch(() => {});
-  void chrome.storage.session.set({ [`open:${windowId}`]: { url, at: Date.now(), fixCi } });
+  void chrome.storage.session.set({ [`open:${windowId}`]: { url, at: Date.now(), action: fixCi ? "fixci" : undefined } });
   chrome.notifications.clear(id);
 }
 
@@ -286,6 +290,12 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     void chrome.storage.session.set({ [`open:${sender.tab.windowId}`]: { url: msg.url, at: Date.now() } });
     return;
   }
+  // The PR page's actions bar (ext/content.js): open the panel on this PR, unpinned, with that action's menu open.
+  if (msg.type === "pr-action" && sender.tab && parsePr(msg.url) && ["review", "fixci", "feedback"].includes(msg.action)) {
+    void chrome.sidePanel.open({ windowId: sender.tab.windowId });
+    void chrome.storage.session.set({ [`open:${sender.tab.windowId}`]: { url: msg.url, at: Date.now(), action: msg.action, pin: false } });
+    return;
+  }
   if (msg.type === "inbox-rows" && sender.tab?.id !== undefined && Array.isArray(msg.rows)) {
     const tab = { seq: Number(msg.seq), rows: (msg.rows as { href?: string; sub?: string }[]).map((r) => ({ pr: rowPr(r.href, r.sub), url: r.href })) };
     const id = sender.tab.id;
@@ -302,7 +312,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.type === "pr-sessions") {
     const pr = parsePr(msg.url);
     const panelOpen = sender.tab ? openPanels.has(sender.tab.windowId) : false;
-    const live = async () => pr && (await ready()) && (await Promise.all([agentsLive, workspacesLive])).every(Boolean) ? { ...counts(pr), panelOpen } : null;
+    const live = async () => pr && (await ready()) && (await Promise.all([agentsLive, workspacesLive])).every(Boolean) ? { ...counts(pr), ci: ciOf(pr), panelOpen } : null;
     live().then(reply, () => reply(null));
     return true;
   }
