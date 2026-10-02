@@ -126,6 +126,10 @@ let allTimer: ReturnType<typeof setTimeout> | undefined;
 let lastStatus = "";
 // The active tab's inbox rows (Graphite inbox, GitHub PR list), shown instead of all sessions; empty elsewhere.
 let inbox: InboxRow[] = [];
+// The page's inbox rows; `inbox` is these unless the user switched the inbox page's list to all sessions (sync `allSessions`).
+let pageInbox: InboxRow[] = [];
+let showAll = false;
+const setPageInbox = (rows: InboxRow[]) => ((pageInbox = rows), (inbox = showAll ? [] : rows));
 let inboxSettings = INBOX_DEFAULTS;
 // The inbox's stacks from the background, as indices into the rows they were asked for (kept across row changes until the
 // next answer); expanded ones by key, shared with ext/inbox.js.
@@ -278,6 +282,17 @@ function overview() {
     : el("div", { className: "empty", textContent: search.value.trim() ? "No sessions match this search." : "No Paseo sessions yet." });
 }
 
+// On an inbox page: the inbox's PRs, or every session.
+function viewToggle() {
+  const tab = (label: string, all: boolean) => {
+    const b = el("button", { textContent: label, className: "seg" + (showAll === all ? " on" : "") });
+    b.setAttribute("aria-pressed", String(showAll === all));
+    b.onclick = () => void chrome.storage.sync.set({ allSessions: all });
+    return b;
+  };
+  return el("div", { className: "view-toggle" }, tab("Inbox", false), tab("All sessions", true));
+}
+
 function selectAgent(id: string | null) {
   if (id === selectedId && unsubscribeTimeline) return;
   const [same, top] = [id === selectedId, timeline.scrollTop];
@@ -296,6 +311,7 @@ function selectAgent(id: string | null) {
     setStatus(viewName());
     if (isCreating()) return;
     timeline.append(
+      ...(!pr && !ticket && pageInbox.length ? [viewToggle()] : []),
       pr || ticket
         ? el("div", { className: "empty", textContent: `No Paseo sessions on this ${pr ? "PR" : "ticket"} yet. Start one with ＋ New.` })
         : inbox.length
@@ -1112,7 +1128,7 @@ async function syncActiveTab(force = false) {
   const nextPr = parsePr(tab?.url);
   const nextTicket = nextPr ? null : parseTicket(tab?.url);
   const had = inbox.length;
-  inbox = nextPr || nextTicket || tab?.id === undefined ? [] : await inboxOf(tab.id);
+  setPageInbox(nextPr || nextTicket || tab?.id === undefined ? [] : await inboxOf(tab.id));
   void loadStacks();
   await switchTo(nextPr, nextTicket, force);
   // Inbox and all sessions share the "all" context, so switchTo doesn't re-render between them.
@@ -1209,7 +1225,7 @@ async function openPr(p: Pr, url?: string) {
 
 let knownSections = "";
 function setInbox(rows: InboxRow[]) {
-  inbox = rows;
+  setPageInbox(rows);
   void loadStacks();
   // For the options page, which can't see the page.
   const names = JSON.stringify(pageSections(rows));
@@ -1228,6 +1244,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.stacks) (setExpanded(changes.stacks.newValue), inbox.length && !pr && !ticket && renderAll());
 });
 void loadInboxSettings().then((s) => (inboxSettings = s));
+const setShowAll = (v: unknown) => {
+  showAll = v === true;
+  setPageInbox(pageInbox);
+  void loadStacks();
+  if (!pr && !ticket) renderAll();
+};
+void chrome.storage.sync.get("allSessions").then(({ allSessions }) => setShowAll(allSessions));
+chrome.storage.onChanged.addListener((changes, area) => area === "sync" && changes.allSessions && setShowAll(changes.allSessions.newValue));
 
 pinBtn.onclick = () => {
   pinned = !pinned;
