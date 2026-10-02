@@ -252,7 +252,10 @@ function renderAll() {
   // The picker is hidden behind the new-session form; closing the form reloads it.
   if (isCreating()) return;
   const option = (a: PaseoAgent) => el("option", { value: a.id, textContent: [optionLabel(a), whereOf(a)].filter(Boolean).join(" · ") });
-  const shown = inbox.length ? inboxPicker() : groups().filter(([, list]) => list.length);
+  const listedNow: (readonly [string, PaseoAgent[]])[] = inbox.length ? inboxPicker() : groups().filter(([, list]) => list.length);
+  // A session opened from search (archived, or past the finished cap) stays selected across live re-renders.
+  const extra = listedNow.some(([, list]) => list.some((a) => a.id === selectedId)) ? undefined : agents.find((a) => a.id === selectedId);
+  const shown = extra ? [...listedNow, ["Opened from search", [extra]] as const] : listedNow;
   agentSelect.replaceChildren(
     el("option", { value: "", textContent: inbox.length ? "Inbox" : "All sessions" }),
     ...shown.map(([label, list]) => el("optgroup", { label }, ...list.map(option))),
@@ -270,13 +273,22 @@ function searchFields(a: PaseoAgent) {
 
 function overview() {
   const row = (a: PaseoAgent) => {
-    const btn = el("button", { className: "session-row" }, el("b", { textContent: a.title ?? a.id.slice(0, 8) }), el("span", { textContent: [whereOf(a), a.status].filter(Boolean).join(" · ") }));
-    btn.onclick = () => ((agentSelect.value = a.id), selectAgent(a.id));
+    const btn = el("button", { className: "session-row" }, el("b", { textContent: a.title ?? a.id.slice(0, 8) }), el("span", { textContent: [whereOf(a), a.archivedAt ? "archived" : a.status].filter(Boolean).join(" · ") }));
+    btn.onclick = () => {
+      // Search reaches sessions the picker doesn't list (archived, or past the finished cap).
+      if (!agents.some((x) => x.id === a.id)) agents.push(a);
+      selectAgent(a.id);
+      renderAll();
+    };
     return btn;
   };
-  // Filtered before grouping, so a search reaches past the recently finished cap.
-  const found = agents.filter((a) => matches(search.value, searchFields(a)));
-  const nodes = groups(found).flatMap(([label, list]) => (list.length ? [el("h4", { textContent: label }), ...list.map(row)] : []));
+  // A search looks through every session, archived too, newest first.
+  const nodes = search.value.trim()
+    ? sessionPool()
+        .filter((a) => matches(search.value.trim(), searchFields(a)))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        .map(row)
+    : groups().flatMap(([label, list]) => (list.length ? [el("h4", { textContent: label }), ...list.map(row)] : []));
   return nodes.length
     ? el("div", { className: "overview" }, ...nodes)
     : el("div", { className: "empty", textContent: search.value.trim() ? "No sessions match this search." : "No Paseo sessions yet." });
@@ -314,7 +326,7 @@ function selectAgent(id: string | null) {
       ...(!pr && !ticket && pageInbox.length ? [viewToggle()] : []),
       pr || ticket
         ? el("div", { className: "empty", textContent: `No Paseo sessions on this ${pr ? "PR" : "ticket"} yet. Start one with ＋ New.` })
-        : inbox.length
+        : inbox.length && !search.value.trim()
           ? inboxList()
           : overview(),
     );
