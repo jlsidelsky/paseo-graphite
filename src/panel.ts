@@ -32,7 +32,9 @@ import { isAnswered, parseQuestions, questionResponse, showsText, type Question 
 import {
   agentsOnPr,
   agentsOnTicket,
-  DAEMON_URL,
+  daemonConfig,
+  daemonTarget,
+  loadDaemonTarget,
   groupAll,
   isPrWorkspace as onPr,
   isRepo,
@@ -90,7 +92,7 @@ const ciState = $<HTMLSpanElement>("ci-state");
 const feedbackBtn = $<HTMLButtonElement>("feedback-btn");
 const search = $<HTMLInputElement>("search");
 
-const daemon = new DaemonClient({ url: DAEMON_URL, clientId: "paseo-graphite", clientType: "browser" });
+const daemon = new DaemonClient(daemonConfig("paseo-graphite"));
 const paseo = createPaseoApi(daemon);
 
 type TimelineEntry = Awaited<ReturnType<ReturnType<typeof paseo.agents.ref>["timeline"]["refetch"]>>["entries"][number];
@@ -651,7 +653,10 @@ async function openNewForm() {
     );
     const target = d?.number ?? pr.number;
     const existing = workspaces.find((w) => onPr(w, { ...pr!, number: target }));
-    workspaceSelect.value = (d?.reuse !== false && existing?.id) || NEW_WORKTREE + target;
+    // With no workspace on the PR, the one last used for this repo's PRs (e.g. a shared one for reviewing), if it's still there.
+    const last = (await lastPrWorkspaces())[repoKey(pr)];
+    const remembered = workspaces.some((w) => w.id === last) ? last : undefined;
+    workspaceSelect.value = d?.reuse === false ? NEW_WORKTREE + target : existing?.id || remembered || NEW_WORKTREE + target;
   } else if (ticket) {
     const id = ticket.id;
     const onTicket = workspaces.filter((w) => isTicketWorkspace(w, id));
@@ -726,6 +731,10 @@ function closeNewForm() {
   prefill = "";
 }
 
+// The workspace last picked for a PR session, per repo (chrome.storage.local `prWorkspace`); "" for a new worktree.
+const repoKey = (p: Pr) => `${p.owner}/${p.repo}`;
+const lastPrWorkspaces = async () => (await chrome.storage.local.get<{ prWorkspace?: Record<string, string> }>("prWorkspace")).prWorkspace ?? {};
+
 async function createSession(text: string, imgs: typeof images) {
   const config = {
     provider: modelSelect.value,
@@ -753,6 +762,10 @@ async function createSession(text: string, imgs: typeof images) {
     });
   } else {
     workspace = paseo.workspaces.ref(workspaceSelect.value);
+  }
+  if (pr) {
+    const choice = workspaceSelect.value.startsWith(NEW_WORKTREE) ? "" : workspaceSelect.value;
+    void lastPrWorkspaces().then((all) => chrome.storage.local.set({ prWorkspace: { ...all, [repoKey(pr!)]: choice } }));
   }
   setStatus("Starting session…");
   // Tag it now: a new worktree isn't linked to the PR until Paseo resolves its branch, and another workspace never is.
@@ -1480,10 +1493,10 @@ daemon.subscribeConnectionStatus((s) => {
   }
   if (s.status === "disconnected")
     setStatus(
-      `Can't reach Paseo at ${DAEMON_URL}, retrying. If Paseo is running, allow this extension: node scripts/allow-origin.mjs`,
+      `Can't reach Paseo at ${daemonTarget.url}, retrying. If Paseo is running, allow this extension: node scripts/allow-origin.mjs`,
     );
 });
-daemon.connect().catch(() => {});
+void loadDaemonTarget().then(() => daemon.connect().catch(() => {}));
 
 // Lets the background hide the pages' floating session button while this panel is open; reconnects if the worker restarts.
 function holdPanelPort() {

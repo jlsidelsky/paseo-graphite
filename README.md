@@ -34,7 +34,7 @@ When a PR with Paseo sessions goes from passing or pending checks to failing (as
 
 ## Setup
 
-Needs Node, Chrome and the Paseo desktop app, with its daemon on the default `127.0.0.1:6767`.
+Needs Node, Chrome and the Paseo desktop app, with its daemon on the default `127.0.0.1:6767`. Paseo on another machine (a dev box, say): set its address, and password if it has one, on the options page under **Paseo**, and run step 2 against that host's `~/.paseo/config.json` (then restart its daemon). One host at a time.
 
 1. `npm install && npm run build`
 2. `node scripts/allow-origin.mjs`: adds `chrome-extension://lflfieeldgejaiigfkkmofeekdlgloam` (pinned by `key` in the manifest) to `daemon.cors.allowedOrigins` in `~/.paseo/config.json`. Then **quit and reopen Paseo**; the daemon only reads the allowlist at startup. Until then the panel says it can't reach Paseo.

@@ -59,6 +59,13 @@
       <small id="saved"></small><button id="save" class="primary">Save</button>
     </div>
   </section>
+  <section id="paseo">
+    <h2>Paseo</h2>
+    <p>Where Paseo runs. Blank is this machine (<code>ws://127.0.0.1:6767/ws</code>). For another host, allow this extension in that host's CORS list first (see the README).</p>
+    <label>Address <input id="daemon-url" type="text" spellcheck="false" size="40" /></label>
+    <label>Password <input id="daemon-password" type="password" placeholder="If the host requires one" /></label>
+    <button id="daemon-save">Save and reconnect</button>
+  </section>
   <section id="alerts">
     <h2>Alerts</h2>
     <p>For PRs with Paseo sessions. The same settings are under the panel's <b>⚙</b>; changes save right away.</p>

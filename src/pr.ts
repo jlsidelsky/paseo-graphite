@@ -7,6 +7,24 @@ export type Pr = { owner: string; repo: string; number: number };
 
 export const DAEMON_URL = "ws://127.0.0.1:6767/ws";
 
+// Where Paseo runs: chrome.storage.local `daemon` {url, password}, set on the options page (which reloads the extension).
+// The client reads url and password through these getters on every connect.
+export const daemonTarget = { url: DAEMON_URL, password: "" };
+export const loadDaemonTarget = async () => {
+  const { daemon } = await chrome.storage.local.get<{ daemon?: { url?: string; password?: string } }>("daemon");
+  Object.assign(daemonTarget, { url: daemon?.url?.trim() || DAEMON_URL, password: daemon?.password ?? "" });
+};
+export const daemonConfig = (clientId: string) => ({
+  clientId,
+  clientType: "browser" as const,
+  get url() {
+    return daemonTarget.url;
+  },
+  get password() {
+    return daemonTarget.password || undefined;
+  },
+});
+
 export function parsePr(url: string | undefined): Pr | null {
   // Graphite uses both /github/pr/<owner>/<repo>/<n> and /github/<owner>/<repo>/pull/<n>; GitHub is /<owner>/<repo>/pull/<n>.
   const m =

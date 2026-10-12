@@ -2,7 +2,7 @@ import { createPaseoApi } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { DEFAULT_PRESETS, loadStore, parseHint, PRESET_KINDS, saveStore, type ArgValues, type DiscoveredCache, type Override, type Preset, type Store } from "./actions";
 import { argControls, readArgs } from "./args-form";
-import { DAEMON_URL, SETTINGS } from "./pr";
+import { DAEMON_URL, daemonConfig, loadDaemonTarget, SETTINGS } from "./pr";
 
 type Provider = Awaited<ReturnType<ReturnType<typeof createPaseoApi>["providers"]["snapshot"]>>["entries"][number];
 type Settings = Override & { provider?: string };
@@ -232,7 +232,8 @@ $("save").onclick = async () => {
 
 // Models, efforts and modes come from Paseo; without it the pickers only keep what's saved.
 async function loadProviders() {
-  const daemon = new DaemonClient({ url: DAEMON_URL, clientId: "paseo-graphite-options", clientType: "browser" });
+  await loadDaemonTarget();
+  const daemon = new DaemonClient(daemonConfig("paseo-graphite-options"));
   try {
     await Promise.race([daemon.connect(), new Promise((_, fail) => setTimeout(() => fail(new Error("timeout")), 3000))]);
     return (await createPaseoApi(daemon).providers.snapshot()).entries.filter((p) => p.enabled);
@@ -261,4 +262,16 @@ void chrome.storage.sync.get<Record<string, boolean>>(SETTINGS).then((saved) => 
 void Promise.all([loadInboxSettings(), chrome.storage.local.get("inboxSections")]).then(([s, { inboxSections }]) => {
   inboxStyles();
   fillSettings($("inbox-options"), orderSections(Array.isArray(inboxSections) ? inboxSections : [], s), s);
+});
+
+// Paseo's address. Saving reloads the extension, so the panel and background connect to the new one.
+void chrome.storage.local.get<{ daemon?: { url?: string; password?: string } }>("daemon").then(({ daemon }) => {
+  const [url, password] = [$<HTMLInputElement>("daemon-url"), $<HTMLInputElement>("daemon-password")];
+  url.placeholder = DAEMON_URL;
+  url.value = daemon?.url ?? "";
+  password.value = daemon?.password ?? "";
+  $("daemon-save").onclick = async () => {
+    await chrome.storage.local.set({ daemon: { url: url.value.trim(), password: password.value } });
+    chrome.runtime.reload();
+  };
 });

@@ -1,6 +1,6 @@
 import { createPaseoApi, type PaseoAgent } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { agentsOnPr, alertFor, ciAlertFor, DAEMON_URL, groupStacks, isPrWorkspace, isRepo, parsePr, rowAuthor, rowPr, SETTINGS, type Alert, type Pr, type Workspace } from "./pr";
+import { agentsOnPr, alertFor, ciAlertFor, daemonConfig, groupStacks, loadDaemonTarget, isPrWorkspace, isRepo, parsePr, rowAuthor, rowPr, SETTINGS, type Alert, type Pr, type Workspace } from "./pr";
 
 void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
@@ -9,7 +9,7 @@ void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 void chrome.alarms.create("wake", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(() => {});
 
-const daemon = new DaemonClient({ url: DAEMON_URL, clientId: "paseo-graphite-bg", clientType: "browser" });
+const daemon = new DaemonClient(daemonConfig("paseo-graphite-bg"));
 const paseo = createPaseoApi(daemon);
 
 // ponytail: stays connected while Chrome runs, even with no Graphite tab open; gate on PR tabs if that matters.
@@ -82,7 +82,7 @@ const connected = () => daemon.getConnectionState().status === "connected";
 daemon.subscribeConnectionStatus((s) => {
   if (s.status === "connected") subscribe();
 });
-daemon.connect().catch(() => {});
+void loadDaemonTarget().then(() => daemon.connect().catch(() => {}));
 
 // The worker may have just woken up, so give the daemon a moment before answering.
 function ready() {
