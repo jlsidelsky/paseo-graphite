@@ -28,7 +28,7 @@ import {
 import { argControls, readArgs } from "./args-form";
 import { asKey, connectHosts, conns, hostLabel, hostStatus, isUp, keyOf, LOCAL, listSessions, multiHost, on, splitKey, tagAgent, tagWorkspace, upConns, type Paseo } from "./hosts";
 import { diffStrings, parseUnifiedDiff, type DiffLine } from "./diff";
-import { groupInbox, INBOX_DEFAULTS, loadInboxSettings, matches, pageSections, renderInbox, type InboxRow } from "./inbox-view";
+import { sessionMeta, groupInbox, INBOX_DEFAULTS, loadInboxSettings, matches, pageSections, renderInbox, type InboxRow } from "./inbox-view";
 import { isAnswered, parseQuestions, questionResponse, showsText, type Question } from "./question";
 import {
   agentsOnPr,
@@ -214,8 +214,11 @@ async function loadStack(target: Pr, all: PaseoAgent[]) {
 const listed = () => [...agents, ...stackGroups.flatMap((g) => g.agents)];
 
 // With more than one host, a session's name starts with its host's.
-const sessionName = (a: PaseoAgent) => `${multiHost() ? `${hostLabel(a.id)} · ` : ""}${a.title ?? splitKey(a.id).id.slice(0, 8)}`;
-const optionLabel = (a: PaseoAgent) => `${a.status === "running" ? "● " : ""}${a.archivedAt ? "(archived) " : ""}${sessionName(a)}`;
+const sessionName = (a: PaseoAgent) => a.title ?? splitKey(a.id).id.slice(0, 8);
+// With more than one host, which one a session is on: a chip at the end of a row's second line, plain text in the picker.
+const hostOf = (a: PaseoAgent) => (multiHost() ? hostLabel(a.id) : undefined);
+const optionLabel = (a: PaseoAgent) =>
+  `${a.status === "running" ? "● " : ""}${a.archivedAt ? "(archived) " : ""}${sessionName(a)}${hostOf(a) ? ` — ${hostOf(a)}` : ""}`;
 
 function renderPicker() {
   if (!pr && !ticket) return renderAll();
@@ -270,7 +273,7 @@ function searchFields(a: PaseoAgent) {
 
 function overview() {
   const row = (a: PaseoAgent) => {
-    const btn = el("button", { className: "session-row" }, el("b", { textContent: sessionName(a) }), el("span", { textContent: [whereOf(a), a.archivedAt ? "archived" : a.status].filter(Boolean).join(" · ") }));
+    const btn = el("button", { className: "session-row" }, el("b", { textContent: sessionName(a) }), sessionMeta([whereOf(a), a.archivedAt ? "archived" : a.status].filter(Boolean).join(" · "), hostOf(a)));
     btn.onclick = () => {
       // Search reaches sessions the picker doesn't list (archived, or past the finished cap).
       if (!agents.some((x) => x.id === a.id)) agents.push(a);
@@ -1235,6 +1238,7 @@ const inboxList = () =>
     },
     open: (p) => void openPr(p),
     name: sessionName,
+    host: hostOf,
     toggle: (key, open) => void toggleStack(key, open),
   }, currentStacks(), expandedStacks, { q: search.value, fields: searchFields });
 

@@ -159,11 +159,16 @@ export function inboxStyles() {
 // Kept across re-renders so the settings stay open, and only rebuilt when they or the sections change.
 let settings: { details: HTMLDetailsElement; box: HTMLDivElement; key: string } | undefined;
 
+// A session row's second line: what and where, then the host as a chip on the right (only with more than one host).
+export function sessionMeta(text: string, host?: string) {
+  return el("span", { className: "meta" }, el("span", { textContent: text }), ...(host ? [el("span", { className: "host-chip", textContent: host, title: `On ${host}` })] : []));
+}
+
 export function renderInbox(
   rows: InboxRow[],
   sessionsOf: (pr: Pr) => Agent[],
   s: InboxSettings,
-  on: { pick: (a: Agent) => void; open: (pr: Pr) => void; toggle: (stack: string, open: boolean) => void; name: (a: Agent) => string },
+  on: { pick: (a: Agent) => void; open: (pr: Pr) => void; toggle: (stack: string, open: boolean) => void; name: (a: Agent) => string; host?: (a: Agent) => string | undefined },
   stacks: RowStack[] = [],
   expanded = new Set<string>(),
   find?: InboxFind,
@@ -182,7 +187,7 @@ export function renderInbox(
       "button",
       { className: "session-row" },
       el("b", {}, el("span", { className: `dot-${st}`, textContent: st === "idle" ? "○ " : st === "archived" ? "▫ " : "● " }), on.name(a)),
-      el("span", { textContent: st === "needs" ? "needs you" : st === "archived" ? "archived" : a.status }),
+      sessionMeta(st === "needs" ? "needs you" : st === "archived" ? "archived" : a.status, on.host?.(a)),
     );
     btn.onclick = () => on.pick(a);
     return btn;
