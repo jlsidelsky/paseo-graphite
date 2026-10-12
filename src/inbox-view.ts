@@ -163,7 +163,7 @@ export function renderInbox(
   rows: InboxRow[],
   sessionsOf: (pr: Pr) => Agent[],
   s: InboxSettings,
-  on: { pick: (a: Agent) => void; open: (pr: Pr) => void; toggle: (stack: string, open: boolean) => void },
+  on: { pick: (a: Agent) => void; open: (pr: Pr) => void; toggle: (stack: string, open: boolean) => void; name: (a: Agent) => string },
   stacks: RowStack[] = [],
   expanded = new Set<string>(),
   find?: InboxFind,
@@ -181,7 +181,7 @@ export function renderInbox(
     const btn = el(
       "button",
       { className: "session-row" },
-      el("b", {}, el("span", { className: `dot-${st}`, textContent: st === "idle" ? "○ " : st === "archived" ? "▫ " : "● " }), a.title ?? a.id.slice(0, 8)),
+      el("b", {}, el("span", { className: `dot-${st}`, textContent: st === "idle" ? "○ " : st === "archived" ? "▫ " : "● " }), on.name(a)),
       el("span", { textContent: st === "needs" ? "needs you" : st === "archived" ? "archived" : a.status }),
     );
     btn.onclick = () => on.pick(a);

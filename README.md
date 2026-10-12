@@ -34,7 +34,7 @@ When a PR with Paseo sessions goes from passing or pending checks to failing (as
 
 ## Setup
 
-Needs Node, Chrome and the Paseo desktop app, with its daemon on the default `127.0.0.1:6767`. Paseo on another machine (a dev box, say): set its address, and password if it has one, on the options page under **Paseo**, and run step 2 against that host's `~/.paseo/config.json` (then restart its daemon). One host at a time.
+Needs Node, Chrome and the Paseo desktop app, with its daemon on the default `127.0.0.1:6767`. Paseo on more machines too: see [More hosts](#more-hosts).
 
 1. `npm install && npm run build`
 2. `node scripts/allow-origin.mjs`: adds `chrome-extension://lflfieeldgejaiigfkkmofeekdlgloam` (pinned by `key` in the manifest) to `daemon.cors.allowedOrigins` in `~/.paseo/config.json`. Then **quit and reopen Paseo**; the daemon only reads the allowlist at startup. Until then the panel says it can't reach Paseo.
@@ -46,6 +46,16 @@ Needs Node, Chrome and the Paseo desktop app, with its daemon on the default `12
 5. On a Graphite or GitHub PR, click the toolbar icon (or ⌘⇧P) or the floating button.
 
 `npm run watch` rebuilds on save; click reload on the extension card afterwards. After editing the plugin, run `paseo plugin reload paseo-graphite-pr-tags`.
+
+### More hosts
+
+The panel can show Paseo on several machines at once, like the Paseo app: this one plus a dev box, say. It lists every host's sessions and workspaces together, starts a new session on the host of the workspace you pick (its models and modes come from that host), and sends everything about a session to its own host. With more than one host, sessions and workspaces are labeled with their host's name. A host it can't reach shows as "dev box: can't reach" next to the status line while the others keep working, and it keeps retrying.
+
+1. On the other machine, with this repo checked out there, run `node scripts/allow-origin.mjs` (it edits that machine's `~/.paseo/config.json`), then restart its daemon. Install the plugin there too (step 3 above); it runs inside each daemon.
+2. Make the daemon reachable from this machine (a listen address it can reach, a tunnel, or a VPN), with a password if it's not private.
+3. On the options page under **Paseo**, **Add host**: a label, its address (`ws://<host>:6767/ws`, or `wss://` behind TLS) and the password, then **Save and reconnect**. This machine's entry stays unless you remove it.
+
+An address set before hosts existed carries over as a second host next to this machine's. The same address listed twice is used once.
 
 ## How sessions are matched to a PR
 

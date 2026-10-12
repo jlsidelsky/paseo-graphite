@@ -1,5 +1,5 @@
-import { createPaseoApi, type PaseoAgent } from "@getpaseo/client";
-import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import type { PaseoAgent } from "@getpaseo/client";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import MarkdownIt from "markdown-it";
 import {
   arrange,
@@ -26,20 +26,17 @@ import {
   type Preset,
 } from "./actions";
 import { argControls, readArgs } from "./args-form";
+import { asKey, connectHosts, conns, hostLabel, hostStatus, isUp, keyOf, LOCAL, listSessions, multiHost, on, splitKey, tagAgent, tagWorkspace, upConns, type Paseo } from "./hosts";
 import { diffStrings, parseUnifiedDiff, type DiffLine } from "./diff";
 import { groupInbox, INBOX_DEFAULTS, loadInboxSettings, matches, pageSections, renderInbox, type InboxRow } from "./inbox-view";
 import { isAnswered, parseQuestions, questionResponse, showsText, type Question } from "./question";
 import {
   agentsOnPr,
   agentsOnTicket,
-  daemonConfig,
-  daemonTarget,
-  loadDaemonTarget,
   groupAll,
   isPrWorkspace as onPr,
   isRepo,
   isTicketWorkspace,
-  listSessions,
   parsePr,
   parseTicket,
   prLabel,
@@ -91,11 +88,9 @@ const fixCiBtn = $<HTMLButtonElement>("fix-ci-btn");
 const ciState = $<HTMLSpanElement>("ci-state");
 const feedbackBtn = $<HTMLButtonElement>("feedback-btn");
 const search = $<HTMLInputElement>("search");
+const hostStatusEl = $<HTMLElement>("host-status");
 
-const daemon = new DaemonClient(daemonConfig("paseo-graphite"));
-const paseo = createPaseoApi(daemon);
-
-type TimelineEntry = Awaited<ReturnType<ReturnType<typeof paseo.agents.ref>["timeline"]["refetch"]>>["entries"][number];
+type TimelineEntry = Awaited<ReturnType<ReturnType<Paseo["agents"]["ref"]>["timeline"]["refetch"]>>["entries"][number];
 type Permission = PaseoAgent["pendingPermissions"][number];
 type RewindMode = "conversation" | "files" | "both";
 
@@ -122,8 +117,6 @@ let unsubscribeTimeline: (() => void) | null = null;
 let refetchTimer: ReturnType<typeof setTimeout> | undefined;
 let images: { data: string; mimeType: string }[] = [];
 let prefill = "";
-let agentsLive: Promise<unknown> | undefined;
-let workspacesLive: Promise<unknown> | undefined;
 let allTimer: ReturnType<typeof setTimeout> | undefined;
 let lastStatus = "";
 // The active tab's inbox rows (Graphite inbox, GitHub PR list), shown instead of all sessions; empty elsewhere.
@@ -183,7 +176,7 @@ const isCreating = () => document.body.classList.contains("creating");
 
 async function loadSessions() {
   const [target, t] = [pr, ticket];
-  const loaded = await listSessions(paseo);
+  const loaded = await listSessions();
   if (pr !== target || ticket !== t) return;
   workspaces = loaded.workspaces;
   everyone = loaded.all;
@@ -198,10 +191,10 @@ async function loadSessions() {
 }
 
 async function loadStack(target: Pr, all: PaseoAgent[]) {
-  const cwd = workspaces.find((w) => isRepo(w, target))?.workspaceDirectory;
-  if (!cwd) return;
+  const w = workspaces.find((w) => isRepo(w, target));
+  if (!w) return;
   const key = prLabel(target);
-  if (!stackCache.has(key)) stackCache.set(key, stackOf(daemon, cwd, target).catch(() => (stackCache.delete(key), [])));
+  if (!stackCache.has(key)) stackCache.set(key, stackOf(on(w.id).daemon, w.workspaceDirectory, target).catch(() => (stackCache.delete(key), [])));
   const stack = await stackCache.get(key)!;
   if (pr?.number !== target.number || pr.repo !== target.repo) return;
   stackPrs = stack;
@@ -220,7 +213,9 @@ async function loadStack(target: Pr, all: PaseoAgent[]) {
 
 const listed = () => [...agents, ...stackGroups.flatMap((g) => g.agents)];
 
-const optionLabel = (a: PaseoAgent) => `${a.status === "running" ? "● " : ""}${a.archivedAt ? "(archived) " : ""}${a.title ?? a.id.slice(0, 8)}`;
+// With more than one host, a session's name starts with its host's.
+const sessionName = (a: PaseoAgent) => `${multiHost() ? `${hostLabel(a.id)} · ` : ""}${a.title ?? splitKey(a.id).id.slice(0, 8)}`;
+const optionLabel = (a: PaseoAgent) => `${a.status === "running" ? "● " : ""}${a.archivedAt ? "(archived) " : ""}${sessionName(a)}`;
 
 function renderPicker() {
   if (!pr && !ticket) return renderAll();
@@ -275,7 +270,7 @@ function searchFields(a: PaseoAgent) {
 
 function overview() {
   const row = (a: PaseoAgent) => {
-    const btn = el("button", { className: "session-row" }, el("b", { textContent: a.title ?? a.id.slice(0, 8) }), el("span", { textContent: [whereOf(a), a.archivedAt ? "archived" : a.status].filter(Boolean).join(" · ") }));
+    const btn = el("button", { className: "session-row" }, el("b", { textContent: sessionName(a) }), el("span", { textContent: [whereOf(a), a.archivedAt ? "archived" : a.status].filter(Boolean).join(" · ") }));
     btn.onclick = () => {
       // Search reaches sessions the picker doesn't list (archived, or past the finished cap).
       if (!agents.some((x) => x.id === a.id)) agents.push(a);
@@ -336,10 +331,11 @@ function selectAgent(id: string | null) {
     if (same) timeline.scrollTop = top;
     return;
   }
-  const serverId = daemon.getLastServerInfoMessage()?.serverId;
-  openInPaseo.href = serverId ? `paseo://h/${encodeURIComponent(serverId)}/agent/${encodeURIComponent(id)}` : "#";
+  const t = on(id);
+  const serverId = t.daemon.getLastServerInfoMessage()?.serverId;
+  openInPaseo.href = serverId ? `paseo://h/${encodeURIComponent(serverId)}/agent/${encodeURIComponent(t.id)}` : "#";
   // ponytail: refetch the tail on every live event instead of merging stream deltas; fine at a few hundred items.
-  unsubscribeTimeline = paseo.agents.ref(id).timeline.subscribe(() => {
+  unsubscribeTimeline = t.api.agents.ref(t.id).timeline.subscribe(() => {
     clearTimeout(refetchTimer);
     refetchTimer = setTimeout(renderTimeline, 250);
   });
@@ -361,7 +357,8 @@ function showContext(u: PaseoAgent["lastUsage"]) {
 async function renderTimeline() {
   const id = selectedId;
   if (!id) return;
-  const page = await paseo.agents.ref(id).timeline.refetch({ direction: "tail", limit: 200 });
+  const t = on(id);
+  const page = await t.api.agents.ref(t.id).timeline.refetch({ direction: "tail", limit: 200 });
   if (id !== selectedId) return;
   const pinned = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 40;
   const agent = page.agent;
@@ -399,7 +396,8 @@ async function renderTimeline() {
 
 async function rewindTo(agentId: string, messageId: string, mode: RewindMode, text: string) {
   try {
-    await daemon.rewindAgent(agentId, messageId, mode);
+    const t = on(agentId);
+    await t.daemon.rewindAgent(t.id, messageId, mode);
     // Like Paseo: rewinding the conversation hands the message back to the composer.
     if (mode !== "files") (prompt.value = text), prompt.focus();
   } catch (err) {
@@ -421,7 +419,7 @@ function permissionCards(agentId: string, permissions: Permission[]) {
   });
 }
 
-type PermissionResponse = Parameters<typeof daemon.respondToPermission>[2];
+type PermissionResponse = Parameters<DaemonClient["respondToPermission"]>[2];
 
 function permissionCard(agentId: string, p: Permission) {
   const card = el("div", { className: "permission" });
@@ -429,7 +427,8 @@ function permissionCard(agentId: string, p: Permission) {
     const controls = card.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button, input");
     controls.forEach((c) => (c.disabled = true));
     try {
-      await daemon.respondToPermission(agentId, p.id, response);
+      const t = on(agentId);
+      await t.daemon.respondToPermission(t.id, p.id, response);
     } catch (err) {
       controls.forEach((c) => (c.disabled = false));
       setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -635,20 +634,27 @@ async function openNewForm() {
     prompt.setSelectionRange(prompt.value.length, prompt.value.length);
   }
 
-  const option = (w: Workspace) => el("option", { value: w.id, textContent: `${w.title ?? w.name} (${w.worktreeSlug ?? w.workspaceDirectory})` });
+  // Workspaces, and new worktrees, are on a host: with more than one, each option says which.
+  const hostTag = (key: string) => (multiHost() ? ` · ${hostLabel(key)}` : "");
+  const option = (w: Workspace) => el("option", { value: w.id, textContent: `${w.title ?? w.name} (${w.worktreeSlug ?? w.workspaceDirectory})${hostTag(w.id)}` });
   const roots = recentRoots();
   const byProject = (list: Workspace[]) =>
-    roots.map((r) => list.filter((w) => w.projectRootPath === r)).filter((g) => g.length).map((g) => el("optgroup", { label: g[0].projectDisplayName }, ...g.map(option)));
+    roots.map((r) => list.filter((w) => rootKey(w) === r)).filter((g) => g.length).map((g) => el("optgroup", { label: g[0].projectDisplayName + hostTag(g[0].id) }, ...g.map(option)));
   const d = newDefaults;
   if (pr) {
     const prWs = workspaces.filter(isPrWorkspace);
     const others = workspaces.filter((w) => !isPrWorkspace(w));
     const stacked = stackPrs.filter((s) => s.number !== pr!.number);
-    const checkout = (n: number, title = "") => el("option", { value: NEW_WORKTREE + n, textContent: `New worktree checked out to PR #${n}${title && ` ${title}`}` });
+    // A new worktree on each host with a workspace in the repo, the first one by default.
+    const found = [...new Set(workspaces.filter((w) => isRepo(w, pr!)).map((w) => splitKey(w.id).host))];
+    const hosts = found.length ? found : [conns[0]?.host.id ?? LOCAL.id];
+    const newAt = (n: number, host = hosts[0]) => NEW_WORKTREE + keyOf(host, String(n));
+    const checkout = (n: number, title = "") =>
+      hosts.map((h) => el("option", { value: newAt(n, h), textContent: `New worktree checked out to PR #${n}${title && ` ${title}`}${hostTag(keyOf(h, ""))}` }));
     workspaceSelect.replaceChildren(
       ...(prWs.length ? [el("optgroup", { label: `On PR #${pr.number}` }, ...prWs.map(option))] : []),
-      checkout(pr.number),
-      ...(stacked.length ? [el("optgroup", { label: "Other PRs in the stack" }, ...stacked.map((s) => checkout(s.number, s.title)))] : []),
+      ...checkout(pr.number),
+      ...(stacked.length ? [el("optgroup", { label: "Other PRs in the stack" }, ...stacked.flatMap((s) => checkout(s.number, s.title)))] : []),
       el("optgroup", { label: "Other workspaces" }, ...others.map(option)),
     );
     const target = d?.number ?? pr.number;
@@ -656,12 +662,12 @@ async function openNewForm() {
     // With no workspace on the PR: per the options page, the one last used for this repo's PRs, a new worktree, or a fixed one.
     const { prWorkspaceMode: mode = "last" } = await chrome.storage.local.get<{ prWorkspaceMode?: string }>("prWorkspaceMode");
     const last = mode === "last" ? (await lastPrWorkspaces())[repoKey(pr)] : mode === "new" ? "" : mode;
-    const remembered = workspaces.some((w) => w.id === last) ? last : undefined;
-    workspaceSelect.value = d?.reuse === false ? NEW_WORKTREE + target : existing?.id || remembered || NEW_WORKTREE + target;
+    const remembered = last && workspaces.some((w) => w.id === asKey(last)) ? asKey(last) : undefined;
+    workspaceSelect.value = d?.reuse === false ? newAt(target) : existing?.id || remembered || newAt(target);
   } else if (ticket) {
     const id = ticket.id;
     const onTicket = workspaces.filter((w) => isTicketWorkspace(w, id));
-    const name = (root: string) => workspaces.find((w) => w.projectRootPath === root)?.projectDisplayName ?? root;
+    const name = (root: string) => (workspaces.find((w) => rootKey(w) === root)?.projectDisplayName ?? splitKey(root).id) + hostTag(root);
     workspaceSelect.replaceChildren(
       ...(onTicket.length ? [el("optgroup", { label: `On ${id}` }, ...onTicket.map(option))] : []),
       ...roots.map((r) => el("option", { value: NEW_WORKTREE + r, textContent: `New worktree for ${id} in ${name(r)} (${ticketBranch(ticket!)})` })),
@@ -673,8 +679,20 @@ async function openNewForm() {
     const ids = new Set(workspaces.map((w) => w.id));
     workspaceSelect.value = byRecency(everyone).find((a) => a.workspaceId && ids.has(a.workspaceId))?.workspaceId ?? workspaces[0]?.id ?? "";
   }
+  await fillModels();
+}
 
-  const snapshot = await paseo.providers.snapshot();
+// The chosen workspace's (or new worktree's) host.
+const chosenHost = () => {
+  const v = workspaceSelect.value;
+  return on(v.startsWith(NEW_WORKTREE) ? v.slice(NEW_WORKTREE.length) : v);
+};
+
+// Models, efforts and modes from the chosen workspace's host. `keep`: the model picked so far, where that host has it.
+async function fillModels(keep = false) {
+  const [choice, current, d] = [workspaceSelect.value, modelSelect.value, newDefaults];
+  const snapshot = await chosenHost().api.providers.snapshot();
+  if (workspaceSelect.value !== choice) return;
   const models = snapshot.entries
     .filter((p) => p.enabled && p.status === "ready")
     .flatMap((p) => (p.models ?? []).map((m) => ({ ...m, key: `${p.provider}/${m.id}`, providerLabel: p.label })));
@@ -698,7 +716,8 @@ async function openNewForm() {
   modeSelect.onchange = () => localStorage.setItem(`mode:${modelSelect.value.split("/")[0]}`, modeSelect.value);
   modelSelect.onchange = () => (fillEfforts(), fillModes());
   const of = (p: string) => models.find((m) => m.isDefault && m.key.startsWith(`${p}/`)) ?? models.find((m) => m.key.startsWith(`${p}/`));
-  const preferred = (d?.model && models.find((m) => m.key === d.model)) || (d?.provider && of(d.provider)) || of("claude") || models[0];
+  const preferred =
+    (keep && models.find((m) => m.key === current)) || (d?.model && models.find((m) => m.key === d.model)) || (d?.provider && of(d.provider)) || of("claude") || models[0];
   if (preferred) modelSelect.value = preferred.key;
   // A preset's effort and mode, where this model and provider offer them.
   const pick = (select: HTMLSelectElement, value?: string) => value && [...select.options].some((o) => o.value === value) && (select.value = value);
@@ -707,13 +726,15 @@ async function openNewForm() {
   fillModes();
   pick(modeSelect, d?.mode);
 }
+workspaceSelect.onchange = () => void fillModels(true);
 
 const byRecency = (list: PaseoAgent[]) => [...list].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
-// Project roots, most recently used first.
+// Project roots, host-qualified, most recently used first.
+const rootKey = (w: Workspace) => (w.projectRootPath ? keyOf(splitKey(w.id).host, w.projectRootPath) : undefined);
 function recentRoots() {
-  const rootOf = new Map(workspaces.map((w) => [w.id, w.projectRootPath]));
-  const roots = [...byRecency(everyone).map((a) => rootOf.get(a.workspaceId ?? "")), ...workspaces.map((w) => w.projectRootPath)];
+  const rootOf = new Map(workspaces.map((w) => [w.id, rootKey(w)]));
+  const roots = [...byRecency(everyone).map((a) => rootOf.get(a.workspaceId ?? "")), ...workspaces.map(rootKey)];
   return [...new Set(roots.filter((r): r is string => !!r))];
 }
 
@@ -742,30 +763,31 @@ async function createSession(text: string, imgs: typeof images) {
     ...(effortSelect.value ? { thinkingOptionId: effortSelect.value } : {}),
     ...(modeSelect.value && !modeSelect.hidden ? { modeId: modeSelect.value } : {}),
   };
+  // A new worktree's value is NEW_WORKTREE + <host>:<PR number or project root>; a workspace's is its id.
+  const fresh = workspaceSelect.value.startsWith(NEW_WORKTREE);
+  const { host, api, id } = chosenHost();
   let workspace;
-  if (pr && workspaceSelect.value.startsWith(NEW_WORKTREE)) {
+  if (pr && fresh) {
     const target = pr;
-    const number = Number(workspaceSelect.value.slice(NEW_WORKTREE.length));
-    const repoRoot = workspaces.find((w) => isRepo(w, target))?.projectRootPath;
+    const number = Number(id);
+    const repoRoot = workspaces.find((w) => splitKey(w.id).host === host.id && isRepo(w, target))?.projectRootPath;
     if (!repoRoot) throw new Error(`No Paseo project for ${pr.owner}/${pr.repo}`);
     setStatus("Creating worktree…");
     timeline.replaceChildren(el("div", { className: "empty", textContent: `Creating a worktree for PR #${number}. This takes a few seconds.` }));
-    workspace = await paseo.workspaces.create({
+    workspace = await api.workspaces.create({
       source: { kind: "worktree", cwd: repoRoot, action: "checkout", checkoutSource: { kind: "change_request", forge: "github", number } },
     });
-  } else if (ticket && workspaceSelect.value.startsWith(NEW_WORKTREE)) {
+  } else if (ticket && fresh) {
     const branchName = ticketBranch(ticket);
     setStatus("Creating worktree…");
     timeline.replaceChildren(el("div", { className: "empty", textContent: `Creating a worktree on ${branchName}. This takes a few seconds.` }));
     // Branches off the default branch. If the branch already exists, Paseo branches off it under a new name instead.
-    workspace = await paseo.workspaces.create({
-      source: { kind: "worktree", cwd: workspaceSelect.value.slice(NEW_WORKTREE.length), action: "branch-off", branchName },
-    });
+    workspace = await api.workspaces.create({ source: { kind: "worktree", cwd: id, action: "branch-off", branchName } });
   } else {
-    workspace = paseo.workspaces.ref(workspaceSelect.value);
+    workspace = api.workspaces.ref(id);
   }
   if (pr) {
-    const choice = workspaceSelect.value.startsWith(NEW_WORKTREE) ? "" : workspaceSelect.value;
+    const choice = fresh ? "" : workspaceSelect.value;
     void lastPrWorkspaces().then((all) => chrome.storage.local.set({ prWorkspace: { ...all, [repoKey(pr!)]: choice } }));
   }
   setStatus("Starting session…");
@@ -775,7 +797,7 @@ async function createSession(text: string, imgs: typeof images) {
   const agent = await workspace.agents.create({ config, prompt: text, labels, ...(imgs.length ? { images: imgs } : {}) });
   closeNewForm();
   newDefaults = null;
-  selectedId = agent.id;
+  selectedId = keyOf(host.id, agent.id);
   unsubscribeTimeline?.();
   unsubscribeTimeline = null;
   await loadSessions();
@@ -817,7 +839,8 @@ async function send() {
   try {
     if (isCreating()) await createSession(text, sent);
     else if (selectedId) {
-      await paseo.agents.ref(selectedId).send(text, sent.length ? { images: sent } : undefined);
+      const t = on(selectedId);
+      await t.api.agents.ref(t.id).send(text, sent.length ? { images: sent } : undefined);
       timeline.append(el("div", { className: "msg user", textContent: text }), working("Working"));
       document.body.classList.add("busy");
       timeline.scrollTop = timeline.scrollHeight;
@@ -832,12 +855,13 @@ async function send() {
   }
 }
 
-type Command = Awaited<ReturnType<typeof daemon.listCommands>>["commands"][number];
+type Command = Awaited<ReturnType<DaemonClient["listCommands"]>>["commands"][number];
 const commandCache = new Map<string, Promise<Command[]>>();
 let suggestions: Command[] = [];
 
 function commandsOf(id: string) {
-  if (!commandCache.has(id)) commandCache.set(id, daemon.listCommands(id).then((r) => r.commands, () => []));
+  const t = on(id);
+  if (!commandCache.has(id)) commandCache.set(id, t.daemon.listCommands(t.id).then((r) => r.commands, () => []));
   return commandCache.get(id)!;
 }
 let suggestIndex = 0;
@@ -918,16 +942,21 @@ const loadPresets = () => loadStore(chrome.storage.sync);
 type Discovered = Found & { providerLabel: string };
 
 // Commands are per session, and a session only exists once started, so ask one per ready provider: this PR's first, else the latest.
+// A provider ready on several hosts is asked on the first one with a session of it.
 async function discover(): Promise<Discovered[]> {
-  const snapshot = await paseo.providers.snapshot();
+  const snapshots = await Promise.all(upConns().map(async (c) => ({ host: c.host.id, entries: (await c.api.providers.snapshot().catch(() => null))?.entries ?? [] })));
   const pool = [...listed(), ...byRecency(everyone)].filter((a) => !a.archivedAt);
-  const lists = await Promise.all(
-    snapshot.entries
-      .filter((p) => p.enabled && p.status === "ready")
-      .map(async (p) => {
-        const a = pool.find((x) => x.provider === p.provider);
-        return a ? (await commandsOf(a.id)).map((c) => ({ ...c, provider: p.provider, providerLabel: p.label ?? p.provider })) : [];
+  const asked = new Set<string>();
+  const picks = snapshots.flatMap(({ host, entries }) =>
+    entries
+      .filter((p) => p.enabled && p.status === "ready" && !asked.has(p.provider))
+      .flatMap((p) => {
+        const a = pool.find((x) => x.provider === p.provider && splitKey(x.id).host === host);
+        return a ? (asked.add(p.provider), [{ p, a }]) : [];
       }),
+  );
+  const lists = await Promise.all(
+    picks.map(async ({ p, a }) => (await commandsOf(a.id)).map((c) => ({ ...c, provider: p.provider, providerLabel: p.label ?? p.provider }))),
   );
   const found = lists.flat();
   void cacheDiscovered(found);
@@ -1205,6 +1234,7 @@ const inboxList = () =>
       selectAgent(a.id);
     },
     open: (p) => void openPr(p),
+    name: sessionName,
     toggle: (key, open) => void toggleStack(key, open),
   }, currentStacks(), expandedStacks, { q: search.value, fields: searchFields });
 
@@ -1305,7 +1335,8 @@ sendBtn.onclick = () => void send();
 sessionMode.onchange = async () => {
   if (!selectedId) return;
   try {
-    await daemon.setAgentMode(selectedId, sessionMode.value);
+    const t = on(selectedId);
+    await t.daemon.setAgentMode(t.id, sessionMode.value);
   } catch (err) {
     setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -1316,7 +1347,8 @@ stopBtn.onclick = async () => {
   if (!selectedId) return;
   stopBtn.disabled = true;
   try {
-    await daemon.cancelAgent(selectedId);
+    const t = on(selectedId);
+    await t.daemon.cancelAgent(t.id);
   } catch (err) {
     setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
@@ -1329,7 +1361,8 @@ unarchiveBtn.onclick = async () => {
   unarchiveBtn.disabled = true;
   try {
     // Same call as Paseo's own Unarchive button.
-    await daemon.refreshAgent(selectedId);
+    const t = on(selectedId);
+    await t.daemon.refreshAgent(t.id);
     unsubscribeTimeline?.();
     unsubscribeTimeline = null;
     await loadSessions();
@@ -1449,18 +1482,15 @@ void chrome.storage.sync.get<Record<string, boolean>>(SETTINGS).then((saved) => 
 });
 
 // Checks change without the sessions changing: keep the CI state and Fix CI current.
-paseo.workspaces.subscribe((update) => {
-  if (update.kind !== "upsert") return;
-  const i = workspaces.findIndex((w) => w.id === update.workspace.id);
+function onWorkspace(w: Workspace) {
+  const i = workspaces.findIndex((x) => x.id === w.id);
   if (i < 0) return;
-  workspaces[i] = update.workspace;
+  workspaces[i] = w;
   if (pr) updateFixCi();
-});
+}
 
 // Relabel picker options in place so the running dots stay live without touching the selection or timeline.
-paseo.agents.subscribe((update) => {
-  if (update.kind !== "upsert") return;
-  const agent = update.agent;
+function onAgent(agent: PaseoAgent) {
   for (const list of [everyone, agents, ...stackGroups.map((g) => g.agents)]) {
     const i = list.findIndex((a) => a.id === agent.id);
     if (i >= 0) list[i] = agent;
@@ -1474,9 +1504,9 @@ paseo.agents.subscribe((update) => {
   }
   const option = [...agentSelect.options].find((o) => o.value === agent.id);
   if (option) option.textContent = optionLabel(agent);
-});
+}
 
-const connected = () => daemon.getConnectionState().status === "connected";
+const connected = () => conns.some(isUp);
 chrome.tabs.onActivated.addListener(() => {
   if (connected()) void syncActiveTab();
 });
@@ -1484,20 +1514,41 @@ chrome.tabs.onUpdated.addListener((_id, info, tab) => {
   if (tab.active && info.url && connected()) void syncActiveTab();
 });
 
+// Per host: whether its agents and workspaces subscriptions are up.
+const live = new Map<string, Promise<unknown>>();
+const subscribeOnce = (key: string, start: () => Promise<unknown>) => {
+  if (!live.has(key)) live.set(key, start().catch(() => live.delete(key)));
+};
+
+// One client per host. A host that's down shows as "<host>: can't reach" while the others work, and keeps being retried.
 // The browser hides the daemon's 403, so a disallowed origin looks like any other failed connect.
-daemon.subscribeConnectionStatus((s) => {
-  if (s.status === "connected") {
-    void syncActiveTab(true).then(takeStart).then(takeOpen);
-    // The daemon only sends agent updates once asked; the subscription re-subscribes after reconnects by itself.
-    agentsLive ??= paseo.agents.list({ subscribe: {} }).catch(() => (agentsLive = undefined));
-    workspacesLive ??= paseo.workspaces.list({ subscribe: {} }).catch(() => (workspacesLive = undefined));
+void connectHosts("paseo-graphite").then((list) => {
+  for (const c of list) {
+    const host = c.host.id;
+    c.api.workspaces.subscribe((u) => u.kind === "upsert" && onWorkspace(tagWorkspace(host, u.workspace)));
+    c.api.agents.subscribe((u) => u.kind === "upsert" && onAgent(tagAgent(host, u.agent)));
+    let wasUp = false;
+    c.daemon.subscribeConnectionStatus((s) => {
+      const down = hostStatus();
+      hostStatusEl.textContent = down ?? "";
+      hostStatusEl.hidden = !down;
+      if (s.status === "connected") {
+        wasUp = true;
+        void syncActiveTab(true).then(takeStart).then(takeOpen);
+        // The daemon only sends agent updates once asked; the subscription re-subscribes after reconnects by itself.
+        subscribeOnce(`${host}:agents`, () => c.api.agents.list({ subscribe: {} }));
+        subscribeOnce(`${host}:workspaces`, () => c.api.workspaces.list({ subscribe: {} }));
+      }
+      if (s.status !== "disconnected") return;
+      // Another host is still up: drop this one's sessions until it's back.
+      if (connected()) return void (wasUp && ((wasUp = false), syncActiveTab(true)));
+      setStatus(
+        `Can't reach Paseo at ${conns.map((x) => x.host.url).join(", ")}, retrying. If Paseo is running, allow this extension: node scripts/allow-origin.mjs`,
+      );
+    });
+    void c.daemon.connect().catch(() => {});
   }
-  if (s.status === "disconnected")
-    setStatus(
-      `Can't reach Paseo at ${daemonTarget.url}, retrying. If Paseo is running, allow this extension: node scripts/allow-origin.mjs`,
-    );
 });
-void loadDaemonTarget().then(() => daemon.connect().catch(() => {}));
 
 // Lets the background hide the pages' floating session button while this panel is open; reconnects if the worker restarts.
 function holdPanelPort() {

@@ -5,26 +5,6 @@ type Paseo = ReturnType<typeof createPaseoApi>;
 export type Workspace = Awaited<ReturnType<Paseo["workspaces"]["list"]>>["entries"][number];
 export type Pr = { owner: string; repo: string; number: number };
 
-export const DAEMON_URL = "ws://127.0.0.1:6767/ws";
-
-// Where Paseo runs: chrome.storage.local `daemon` {url, password}, set on the options page (which reloads the extension).
-// The client reads url and password through these getters on every connect.
-export const daemonTarget = { url: DAEMON_URL, password: "" };
-export const loadDaemonTarget = async () => {
-  const { daemon } = await chrome.storage.local.get<{ daemon?: { url?: string; password?: string } }>("daemon");
-  Object.assign(daemonTarget, { url: daemon?.url?.trim() || DAEMON_URL, password: daemon?.password ?? "" });
-};
-export const daemonConfig = (clientId: string) => ({
-  clientId,
-  clientType: "browser" as const,
-  get url() {
-    return daemonTarget.url;
-  },
-  get password() {
-    return daemonTarget.password || undefined;
-  },
-});
-
 export function parsePr(url: string | undefined): Pr | null {
   // Graphite uses both /github/pr/<owner>/<repo>/<n> and /github/<owner>/<repo>/pull/<n>; GitHub is /<owner>/<repo>/pull/<n>.
   const m =
@@ -162,11 +142,6 @@ export function groupAll(agents: Agent[], finishedCap = 20) {
   const running = live.filter((a) => !needs.includes(a) && (a.status === "running" || a.status === "initializing"));
   const finished = live.filter((a) => !needs.includes(a) && !running.includes(a)).slice(0, finishedCap);
   return { needs, running, finished };
-}
-
-export async function listSessions(paseo: Paseo) {
-  const [ws, ag] = await Promise.all([paseo.workspaces.list(), paseo.agents.list({ filter: { includeArchived: true } })]);
-  return { workspaces: ws.entries, all: ag.entries.map((e) => e.agent) };
 }
 
 // An inbox row's PR: its title link, else the "author · owner/repo #n" line under it (which may go on with labels or a "1/4" stack position).

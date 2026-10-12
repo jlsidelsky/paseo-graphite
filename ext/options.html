@@ -52,7 +52,7 @@
     <div id="kinds"></div>
     <h2>Discovered commands</h2>
     <p>Review and feedback commands the panel found in your sessions, by provider. Rename, hide, favorite, reorder, or give them defaults.</p>
-    <p id="offline" hidden>Can't reach Paseo, so model, effort and mode lists only show what's saved.</p>
+    <p id="offline" hidden>Can't reach any Paseo host, so model, effort and mode lists only show what's saved.</p>
     <div id="commands"></div>
     <div class="row bar">
       <button id="reset">Reset to defaults</button><span style="flex: 1"></span>
@@ -61,10 +61,14 @@
   </section>
   <section id="paseo">
     <h2>Paseo</h2>
-    <p>Where Paseo runs. Blank is this machine (<code>ws://127.0.0.1:6767/ws</code>). For another host, allow this extension in that host's CORS list first (see the README).</p>
-    <label>Address <input id="daemon-url" type="text" spellcheck="false" size="40" /></label>
-    <label>Password <input id="daemon-password" type="password" placeholder="If the host requires one" /></label>
-    <button id="daemon-save">Save and reconnect</button>
+    <p>
+      Where Paseo runs: this machine (<code>ws://127.0.0.1:6767/ws</code>), and any other hosts, a dev box say. The panel shows the sessions
+      and workspaces of every host it can reach, and starts sessions on the host of the workspace you pick. With more than one host, sessions
+      and workspaces say which host they're on. For another host, allow this extension in that host's CORS list first (see the README).
+      A host without an address is dropped, and so is a second one with the same address.
+    </p>
+    <div id="hosts"></div>
+    <div class="row"><button id="host-add">Add host</button><span style="flex: 1"></span><button id="hosts-save" class="primary">Save and reconnect</button></div>
   </section>
   <section>
     <h2>New PR sessions</h2>

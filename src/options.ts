@@ -1,10 +1,9 @@
-import { createPaseoApi } from "@getpaseo/client";
-import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { DEFAULT_PRESETS, loadStore, parseHint, PRESET_KINDS, saveStore, type ArgValues, type DiscoveredCache, type Override, type Preset, type Store } from "./actions";
 import { argControls, readArgs } from "./args-form";
-import { DAEMON_URL, daemonConfig, loadDaemonTarget, SETTINGS } from "./pr";
+import { asKey, connectHosts, DAEMON_URL, hostLabel, loadHosts, multiHost, tagWorkspace, type Host, type Paseo } from "./hosts";
+import { SETTINGS } from "./pr";
 
-type Provider = Awaited<ReturnType<ReturnType<typeof createPaseoApi>["providers"]["snapshot"]>>["entries"][number];
+type Provider = Awaited<ReturnType<Paseo["providers"]["snapshot"]>>["entries"][number];
 type Settings = Override & { provider?: string };
 import { fillSettings, inboxStyles, loadInboxSettings, orderSections } from "./inbox-view";
 
@@ -239,31 +238,40 @@ async function renderPrWorkspace(list: { id: string; name: string; title?: strin
   select.replaceChildren(
     option("last", "The workspace I last picked for that repo"),
     option("new", "A new worktree checked out to the PR"),
-    ...list.map((w) => option(w.id, `Always ${w.title ?? w.name}${w.projectDisplayName ? ` (${w.projectDisplayName})` : ""}`)),
+    ...list.map((w) =>
+      option(w.id, `Always ${w.title ?? w.name}${w.projectDisplayName ? ` (${w.projectDisplayName})` : ""}${multiHost() ? ` · ${hostLabel(w.id)}` : ""}`),
+    ),
   );
-  // A workspace that's gone (or Paseo offline): keep the saved choice rather than silently changing it.
-  if (![...select.options].some((o) => o.value === prWorkspaceMode)) select.append(option(prWorkspaceMode, "A workspace Paseo doesn't list right now"));
-  select.value = prWorkspaceMode;
+  const mode = prWorkspaceMode === "last" || prWorkspaceMode === "new" ? prWorkspaceMode : asKey(prWorkspaceMode);
+  // A workspace that's gone (or its host offline): keep the saved choice rather than silently changing it.
+  if (![...select.options].some((o) => o.value === mode)) select.append(option(mode, "A workspace Paseo doesn't list right now"));
+  select.value = mode;
   select.onchange = () => void chrome.storage.local.set({ prWorkspaceMode: select.value });
 }
 
-// Models, efforts and modes come from Paseo; without it the pickers only keep what's saved.
+// Models, efforts and modes come from Paseo (every host's, the first host's for a provider on several); without it the pickers
+// only keep what's saved. Each host's row says whether it answered.
 async function loadProviders() {
-  await loadDaemonTarget();
-  const daemon = new DaemonClient(daemonConfig("paseo-graphite-options"));
-  try {
-    await Promise.race([daemon.connect(), new Promise((_, fail) => setTimeout(() => fail(new Error("timeout")), 3000))]);
-    const api = createPaseoApi(daemon);
-    const [ws, snapshot] = await Promise.all([api.workspaces.list().catch(() => ({ entries: [] })), api.providers.snapshot()]);
-    void renderPrWorkspace(ws.entries);
-    return snapshot.entries.filter((p) => p.enabled);
-  } catch {
-    $("offline").hidden = false;
-    void renderPrWorkspace([]);
-    return [];
-  } finally {
-    void daemon.close().catch(() => {});
-  }
+  const results = await Promise.all(
+    (await connectHosts("paseo-graphite-options")).map(async ({ host, daemon, api }) => {
+      try {
+        await Promise.race([daemon.connect(), new Promise((_, fail) => setTimeout(() => fail(new Error("timeout")), 3000))]);
+        const [ws, snapshot] = await Promise.all([api.workspaces.list().catch(() => ({ entries: [] })), api.providers.snapshot()]);
+        setHostStatus(host.id, "connected");
+        return { workspaces: ws.entries.map((w) => tagWorkspace(host.id, w)), providers: snapshot.entries.filter((p) => p.enabled) };
+      } catch {
+        setHostStatus(host.id, "can't reach");
+        return { workspaces: [], providers: [] };
+      } finally {
+        void daemon.close().catch(() => {});
+      }
+    }),
+  );
+  const seen = new Set<string>();
+  const all = results.flatMap((r) => r.providers).filter((p) => !seen.has(p.provider) && !!seen.add(p.provider));
+  $("offline").hidden = !!all.length;
+  void renderPrWorkspace(results.flatMap((r) => r.workspaces));
+  return all;
 }
 
 void Promise.all([loadStore(chrome.storage.sync), chrome.storage.local.get<{ discovered: DiscoveredCache }>({ discovered: {} }), loadProviders()]).then(([s, local, p]) => {
@@ -285,14 +293,37 @@ void Promise.all([loadInboxSettings(), chrome.storage.local.get("inboxSections")
   fillSettings($("inbox-options"), orderSections(Array.isArray(inboxSections) ? inboxSections : [], s), s);
 });
 
-// Paseo's address. Saving reloads the extension, so the panel and background connect to the new one.
-void chrome.storage.local.get<{ daemon?: { url?: string; password?: string } }>("daemon").then(({ daemon }) => {
-  const [url, password] = [$<HTMLInputElement>("daemon-url"), $<HTMLInputElement>("daemon-password")];
-  url.placeholder = DAEMON_URL;
-  url.value = daemon?.url ?? "";
-  password.value = daemon?.password ?? "";
-  $("daemon-save").onclick = async () => {
-    await chrome.storage.local.set({ daemon: { url: url.value.trim(), password: password.value } });
-    chrome.runtime.reload();
-  };
-});
+// Paseo hosts. Saving reloads the extension, so the panel and background connect to the new list.
+const hostsBox = $<HTMLDivElement>("hosts");
+const setHostStatus = (id: string, text: string) => {
+  const node = hostsBox.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"] .host-status`);
+  if (node) node.textContent = text;
+};
+function hostRow(h: Host) {
+  const remove = el("button", { textContent: "Remove" });
+  const node = el(
+    "div",
+    { className: "preset" },
+    el(
+      "div",
+      { className: "row wrap" },
+      field("Label", el("input", { name: "label", value: h.label, placeholder: "dev box" })),
+      field("Address", el("input", { name: "url", value: h.url, placeholder: DAEMON_URL, size: 32, spellcheck: false })),
+      field("Password", el("input", { name: "password", type: "password", value: h.password, placeholder: "If the host requires one" })),
+      el("small", { className: "host-status" }),
+      remove,
+    ),
+  );
+  node.dataset.id = h.id;
+  remove.onclick = () => node.remove();
+  return node;
+}
+void loadHosts().then((hosts) => hostsBox.replaceChildren(...hosts.map(hostRow)));
+$("host-add").onclick = () => hostsBox.append(hostRow({ id: newId(), label: "", url: "", password: "" }));
+$("hosts-save").onclick = async () => {
+  const rows = [...hostsBox.querySelectorAll<HTMLElement>("[data-id]")];
+  const hosts = rows.map((n) => ({ id: n.dataset.id!, label: value(n, "label"), url: value(n, "url"), password: (n.querySelector("[name=password]") as HTMLInputElement).value }));
+  await chrome.storage.local.set({ hosts });
+  await chrome.storage.local.remove("daemon");
+  chrome.runtime.reload();
+};

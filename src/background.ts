@@ -1,6 +1,6 @@
-import { createPaseoApi, type PaseoAgent } from "@getpaseo/client";
-import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { agentsOnPr, alertFor, ciAlertFor, daemonConfig, groupStacks, loadDaemonTarget, isPrWorkspace, isRepo, parsePr, rowAuthor, rowPr, SETTINGS, type Alert, type Pr, type Workspace } from "./pr";
+import type { PaseoAgent } from "@getpaseo/client";
+import { connectHosts, conns, isUp, keyOf, on, tagAgent, tagWorkspace, type Conn } from "./hosts";
+import { agentsOnPr, alertFor, ciAlertFor, groupStacks, isPrWorkspace, isRepo, parsePr, rowAuthor, rowPr, SETTINGS, type Alert, type Pr, type Workspace } from "./pr";
 
 void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
@@ -9,15 +9,13 @@ void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 void chrome.alarms.create("wake", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(() => {});
 
-const daemon = new DaemonClient(daemonConfig("paseo-graphite-bg"));
-const paseo = createPaseoApi(daemon);
-
 // ponytail: stays connected while Chrome runs, even with no Graphite tab open; gate on PR tabs if that matters.
 // ponytail: state is in memory, so a change that lands while the worker is restarting doesn't alert.
-let agents = new Map<string, PaseoAgent>();
-let workspaces = new Map<string, Workspace>();
-let agentsLive: Promise<unknown> | undefined;
-let workspacesLive: Promise<unknown> | undefined;
+// Every host's sessions and workspaces, by host-qualified id (src/hosts.ts).
+const agents = new Map<string, PaseoAgent>();
+const workspaces = new Map<string, Workspace>();
+// Per host: its agents and workspaces subscriptions.
+const live = new Map<string, { agents?: Promise<unknown>; workspaces?: Promise<unknown> }>();
 let pushTimer: ReturnType<typeof setTimeout> | undefined;
 
 function trackWorkspace(w: Workspace, prev: Workspace | undefined) {
@@ -33,67 +31,84 @@ function track(agent: PaseoAgent, prev: PaseoAgent | undefined) {
   if (kind) void alert(agent, kind);
 }
 
+// A host's snapshot replaces only that host's entries.
+const dropHost = <T>(map: Map<string, T>, host: string) => {
+  const prev = new Map<string, T>();
+  for (const [k, v] of map) if (k.startsWith(`${host}:`)) prev.set(k, v), map.delete(k);
+  return prev;
+};
+
 // Owned subscriptions re-subscribe and re-snapshot after a reconnect on their own; this only retries a failed first request.
-function subscribe() {
-  agentsLive ??= paseo.agents
+function subscribe({ host: { id: host }, api }: Conn) {
+  const l = live.get(host) ?? live.set(host, {}).get(host)!;
+  l.agents ??= api.agents
     .list({ subscribe: {} })
     .then((r) => {
       r.subscription.subscribe({
         snapshot: (s) => {
-          const prev = agents;
-          agents = new Map();
-          for (const { agent } of s.entries) track(agent, prev.get(agent.id));
+          const prev = dropHost(agents, host);
+          for (const { agent } of s.entries) track(tagAgent(host, agent), prev.get(keyOf(host, agent.id)));
           changed();
         },
         update: (m) => {
           if (m.type !== "agent_update") return;
-          if (m.payload.kind === "upsert") track(m.payload.agent, agents.get(m.payload.agent.id));
-          else agents.delete(m.payload.agentId);
+          if (m.payload.kind === "upsert") track(tagAgent(host, m.payload.agent), agents.get(keyOf(host, m.payload.agent.id)));
+          else agents.delete(keyOf(host, m.payload.agentId));
           changed();
         },
       });
       return true;
     })
-    .catch(() => (agentsLive = undefined));
-  workspacesLive ??= paseo.workspaces
+    .catch(() => (l.agents = undefined));
+  l.workspaces ??= api.workspaces
     .list({ subscribe: {} })
     .then((r) => {
       r.subscription.subscribe({
         snapshot: (s) => {
-          const prev = workspaces;
-          workspaces = new Map();
-          for (const w of s.entries) trackWorkspace(w, prev.get(w.id));
+          const prev = dropHost(workspaces, host);
+          for (const w of s.entries) trackWorkspace(tagWorkspace(host, w), prev.get(keyOf(host, w.id)));
           changed();
         },
         update: (m) => {
           if (m.type !== "workspace_update") return;
-          if (m.payload.kind === "upsert") trackWorkspace(m.payload.workspace, workspaces.get(m.payload.workspace.id));
-          else workspaces.delete(m.payload.id);
+          if (m.payload.kind === "upsert") trackWorkspace(tagWorkspace(host, m.payload.workspace), workspaces.get(keyOf(host, m.payload.workspace.id)));
+          else workspaces.delete(keyOf(host, m.payload.id));
           changed();
         },
       });
       return true;
     })
-    .catch(() => (workspacesLive = undefined));
+    .catch(() => (l.workspaces = undefined));
 }
 
-const connected = () => daemon.getConnectionState().status === "connected";
-
-daemon.subscribeConnectionStatus((s) => {
-  if (s.status === "connected") subscribe();
-});
-void loadDaemonTarget().then(() => daemon.connect().catch(() => {}));
-
-// The worker may have just woken up, so give the daemon a moment before answering.
-function ready() {
-  return new Promise<boolean>((resolve) => {
-    if (connected()) return resolve(true);
-    const timer = setTimeout(() => (off(), resolve(false)), 5000);
-    const off = daemon.subscribeConnectionStatus((s) => {
-      if (s.status === "connected") (clearTimeout(timer), off(), resolve(true));
+const hostsReady = connectHosts("paseo-graphite-bg").then((list) => {
+  for (const c of list) {
+    c.daemon.subscribeConnectionStatus((s) => {
+      if (s.status === "connected") subscribe(c);
     });
+    void c.daemon.connect().catch(() => {});
+  }
+});
+
+// The worker may have just woken up, so give the hosts a moment before answering; any one of them will do.
+async function ready() {
+  await hostsReady;
+  return new Promise<boolean>((resolve) => {
+    if (conns.some(isUp)) return resolve(true);
+    let offs: (() => void)[] = [];
+    const done = (ok: boolean) => (clearTimeout(timer), offs.forEach((off) => off()), resolve(ok));
+    const timer = setTimeout(() => done(false), 5000);
+    offs = conns.map((c) =>
+      c.daemon.subscribeConnectionStatus((s) => {
+        if (s.status === "connected") done(true);
+      }),
+    );
   });
 }
+
+// Some host's sessions and workspaces are both subscribed.
+const synced = async () =>
+  (await Promise.all(conns.map(async (c) => (await Promise.all([live.get(c.host.id)?.agents, live.get(c.host.id)?.workspaces])).every(Boolean)))).some(Boolean);
 
 const onPr = (list: PaseoAgent[], pr: Pr) => agentsOnPr([...workspaces.values()], list, pr).filter((a) => !a.archivedAt);
 
@@ -139,14 +154,16 @@ function cached<T>(cache: Map<string, { at: number; p: Promise<T> }>, key: strin
 
 // Inbox rows (from ext/inbox.js) as the panel sends them; `stacks[].rows` index into them.
 async function inboxStacks(raw: { href?: string; sub?: string; title?: string; section?: string }[]) {
-  if (!(await ready()) || !(await workspacesLive)) return null;
+  if (!(await ready()) || !(await synced())) return null;
   const started = Date.now();
   const rows = raw.map((r) => ({ pr: rowPr(r?.href, r?.sub), author: rowAuthor(r?.sub), sig: `${r?.title}\n${r?.sub}`, section: String(r?.section ?? "") }));
-  const search = (cwd: string, query: string, limit: number) =>
-    daemon.searchForge({ cwd, query, limit, kinds: ["pr"] }).then((r) => r.items as ForgePr[]);
   const branches = async ({ pr, author, sig }: (typeof rows)[number]): Promise<Branches> => {
-    const cwd = pr && [...workspaces.values()].find((w) => isRepo(w, pr))?.workspaceDirectory;
-    if (!pr || !cwd) return null;
+    const w = pr && [...workspaces.values()].find((w) => isRepo(w, pr));
+    if (!pr || !w) return null;
+    const cwd = w.workspaceDirectory;
+    // On the host that has the repo.
+    const search = (cwd: string, query: string, limit: number) =>
+      on(w.id).daemon.searchForge({ cwd, query, limit, kinds: ["pr"] }).then((r) => r.items as ForgePr[]);
     const key = `${pr.owner}/${pr.repo}#${pr.number}`;
     const byAuthor = `${pr.owner}/${pr.repo}:${author}`;
     // A changed row (new title, labels, stack position) refetches its author's PRs too.
@@ -301,8 +318,8 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     const id = sender.tab.id;
     if (tab.rows.length) inboxTabs.set(id, tab);
     else inboxTabs.delete(id);
-    const live = async () => (await ready()) && (await Promise.all([agentsLive, workspacesLive])).every(Boolean) ? rowStates(tab) : null;
-    live().then(reply, () => reply(null));
+    const states = async () => ((await ready()) && (await synced()) ? rowStates(tab) : null);
+    states().then(reply, () => reply(null));
     return true;
   }
   if (msg.type === "inbox-stacks" && Array.isArray(msg.rows)) {
@@ -312,8 +329,8 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.type === "pr-sessions") {
     const pr = parsePr(msg.url);
     const panelOpen = sender.tab ? openPanels.has(sender.tab.windowId) : false;
-    const live = async () => pr && (await ready()) && (await Promise.all([agentsLive, workspacesLive])).every(Boolean) ? { ...counts(pr), ci: ciOf(pr), panelOpen } : null;
-    live().then(reply, () => reply(null));
+    const states = async () => (pr && (await ready()) && (await synced()) ? { ...counts(pr), ci: ciOf(pr), panelOpen } : null);
+    states().then(reply, () => reply(null));
     return true;
   }
 });
