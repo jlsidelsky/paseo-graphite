@@ -653,8 +653,9 @@ async function openNewForm() {
     );
     const target = d?.number ?? pr.number;
     const existing = workspaces.find((w) => onPr(w, { ...pr!, number: target }));
-    // With no workspace on the PR, the one last used for this repo's PRs (e.g. a shared one for reviewing), if it's still there.
-    const last = (await lastPrWorkspaces())[repoKey(pr)];
+    // With no workspace on the PR: per the options page, the one last used for this repo's PRs, a new worktree, or a fixed one.
+    const { prWorkspaceMode: mode = "last" } = await chrome.storage.local.get<{ prWorkspaceMode?: string }>("prWorkspaceMode");
+    const last = mode === "last" ? (await lastPrWorkspaces())[repoKey(pr)] : mode === "new" ? "" : mode;
     const remembered = workspaces.some((w) => w.id === last) ? last : undefined;
     workspaceSelect.value = d?.reuse === false ? NEW_WORKTREE + target : existing?.id || remembered || NEW_WORKTREE + target;
   } else if (ticket) {

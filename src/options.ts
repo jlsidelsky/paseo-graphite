@@ -230,15 +230,36 @@ $("save").onclick = async () => {
   setTimeout(() => (saved.textContent = ""), 3000);
 };
 
+// New PR sessions on a PR no workspace is on (usually a teammate's): chrome.storage.local `prWorkspaceMode`, read by the
+// panel. "last" (default) is the workspace last picked for the repo, "new" always a new worktree, else a workspace id.
+async function renderPrWorkspace(list: { id: string; name: string; title?: string | null; projectDisplayName?: string }[]) {
+  const select = $<HTMLSelectElement>("pr-workspace");
+  const { prWorkspaceMode = "last" } = await chrome.storage.local.get<{ prWorkspaceMode?: string }>("prWorkspaceMode");
+  const option = (value: string, textContent: string) => Object.assign(document.createElement("option"), { value, textContent });
+  select.replaceChildren(
+    option("last", "The workspace I last picked for that repo"),
+    option("new", "A new worktree checked out to the PR"),
+    ...list.map((w) => option(w.id, `Always ${w.title ?? w.name}${w.projectDisplayName ? ` (${w.projectDisplayName})` : ""}`)),
+  );
+  // A workspace that's gone (or Paseo offline): keep the saved choice rather than silently changing it.
+  if (![...select.options].some((o) => o.value === prWorkspaceMode)) select.append(option(prWorkspaceMode, "A workspace Paseo doesn't list right now"));
+  select.value = prWorkspaceMode;
+  select.onchange = () => void chrome.storage.local.set({ prWorkspaceMode: select.value });
+}
+
 // Models, efforts and modes come from Paseo; without it the pickers only keep what's saved.
 async function loadProviders() {
   await loadDaemonTarget();
   const daemon = new DaemonClient(daemonConfig("paseo-graphite-options"));
   try {
     await Promise.race([daemon.connect(), new Promise((_, fail) => setTimeout(() => fail(new Error("timeout")), 3000))]);
-    return (await createPaseoApi(daemon).providers.snapshot()).entries.filter((p) => p.enabled);
+    const api = createPaseoApi(daemon);
+    const [ws, snapshot] = await Promise.all([api.workspaces.list().catch(() => ({ entries: [] })), api.providers.snapshot()]);
+    void renderPrWorkspace(ws.entries);
+    return snapshot.entries.filter((p) => p.enabled);
   } catch {
     $("offline").hidden = false;
+    void renderPrWorkspace([]);
     return [];
   } finally {
     void daemon.close().catch(() => {});
