@@ -231,16 +231,33 @@ $("save").onclick = async () => {
 
 // New PR sessions on a PR no workspace is on (usually a teammate's): chrome.storage.local `prWorkspaceMode`, read by the
 // panel. "last" (default) is the workspace last picked for the repo, "new" always a new worktree, else a workspace id.
-async function renderPrWorkspace(list: { id: string; name: string; title?: string | null; projectDisplayName?: string }[]) {
+type WsOption = { id: string; name: string; title?: string | null; projectDisplayName?: string };
+const wsName = (w: WsOption) => `${w.title ?? w.name}${w.projectDisplayName ? ` (${w.projectDisplayName})` : ""}${multiHost() ? ` · ${hostLabel(w.id)}` : ""}`;
+
+// Review sessions (a review preset on its default workspace): chrome.storage.local `reviewWorkspace`, "" for a new worktree
+// checked out to the PR, else a workspace key; `reviewLabel` labels those new worktrees "review" in Paseo.
+async function renderReview(list: WsOption[]) {
+  const select = $<HTMLSelectElement>("review-workspace");
+  const label = $<HTMLInputElement>("review-label");
+  const { reviewWorkspace = "", reviewLabel = false } = await chrome.storage.local.get<{ reviewWorkspace?: string; reviewLabel?: boolean }>(["reviewWorkspace", "reviewLabel"]);
+  const option = (value: string, textContent: string) => Object.assign(document.createElement("option"), { value, textContent });
+  select.replaceChildren(option("", "A new worktree checked out to the PR"), ...list.map((w) => option(w.id, `Always ${wsName(w)}`)));
+  if (![...select.options].some((o) => o.value === reviewWorkspace)) select.append(option(reviewWorkspace, "A workspace Paseo doesn't list right now"));
+  select.value = reviewWorkspace;
+  label.checked = reviewLabel;
+  label.disabled = !!select.value;
+  select.onchange = () => ((label.disabled = !!select.value), void chrome.storage.local.set({ reviewWorkspace: select.value }));
+  label.onchange = () => void chrome.storage.local.set({ reviewLabel: label.checked });
+}
+
+async function renderPrWorkspace(list: WsOption[]) {
   const select = $<HTMLSelectElement>("pr-workspace");
   const { prWorkspaceMode = "last" } = await chrome.storage.local.get<{ prWorkspaceMode?: string }>("prWorkspaceMode");
   const option = (value: string, textContent: string) => Object.assign(document.createElement("option"), { value, textContent });
   select.replaceChildren(
     option("last", "The workspace I last picked for that repo"),
     option("new", "A new worktree checked out to the PR"),
-    ...list.map((w) =>
-      option(w.id, `Always ${w.title ?? w.name}${w.projectDisplayName ? ` (${w.projectDisplayName})` : ""}${multiHost() ? ` · ${hostLabel(w.id)}` : ""}`),
-    ),
+    ...list.map((w) => option(w.id, `Always ${wsName(w)}`)),
   );
   const mode = prWorkspaceMode === "last" || prWorkspaceMode === "new" ? prWorkspaceMode : asKey(prWorkspaceMode);
   // A workspace that's gone (or its host offline): keep the saved choice rather than silently changing it.
@@ -271,6 +288,7 @@ async function loadProviders() {
   const all = results.flatMap((r) => r.providers).filter((p) => !seen.has(p.provider) && !!seen.add(p.provider));
   $("offline").hidden = !!all.length;
   void renderPrWorkspace(results.flatMap((r) => r.workspaces));
+  void renderReview(results.flatMap((r) => r.workspaces));
   return all;
 }
 

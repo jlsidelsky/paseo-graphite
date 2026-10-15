@@ -51,11 +51,13 @@ assert.deepEqual(presetScope({ scope: "stack" }, [], new Set(), 20), [20]);
 
 // ＋ New per action: a review gets a new worktree on the topmost PR; Fix CI and Feedback that PR's workspace.
 const ci = DEFAULT_PRESETS.find((x) => x.kind === "ci")!;
-assert.deepEqual(newDefaultsFor(DEFAULT_PRESETS[0], [10, 30]), { number: 30, reuse: false, provider: undefined, model: undefined, effort: undefined, mode: undefined });
+assert.deepEqual(newDefaultsFor(DEFAULT_PRESETS[0], [10, 30]), { number: 30, reuse: false, review: true, provider: undefined, model: undefined, effort: undefined, mode: undefined });
 assert.equal(newDefaultsFor(ci, [10, 30])!.reuse, true);
 assert.equal(newDefaultsFor({ ...ci, workspace: "new" }, [10])!.reuse, false);
 assert.equal(newDefaultsFor({ ...ci, workspace: "selected" }, [10]), null);
-assert.deepEqual(newDefaultsFor({ ...ci, model: "codex/gpt-5", effort: "high", mode: "auto" }, [10]), { number: 10, reuse: true, provider: "codex", model: "codex/gpt-5", effort: "high", mode: "auto" });
+// A review preset that names its own workspace doesn't follow the review setting.
+assert.equal(newDefaultsFor({ ...DEFAULT_PRESETS[0], workspace: "new" }, [10])!.review, false);
+assert.deepEqual(newDefaultsFor({ ...ci, model: "codex/gpt-5", effort: "high", mode: "auto" }, [10]), { number: 10, reuse: true, review: false, provider: "codex", model: "codex/gpt-5", effort: "high", mode: "auto" });
 assert.equal(newDefaultsFor({ ...ci, provider: "claude" }, [10])!.provider, "claude");
 
 assert.equal(checksText([{ number: 20 }]), "Run `gh pr checks 20` to see which checks fail.");

@@ -666,7 +666,10 @@ async function openNewForm() {
     const { prWorkspaceMode: mode = "last" } = await chrome.storage.local.get<{ prWorkspaceMode?: string }>("prWorkspaceMode");
     const last = mode === "last" ? (await lastPrWorkspaces())[repoKey(pr)] : mode === "new" ? "" : mode;
     const remembered = last && workspaces.some((w) => w.id === asKey(last)) ? asKey(last) : undefined;
-    workspaceSelect.value = d?.reuse === false ? newAt(target) : existing?.id || remembered || newAt(target);
+    // Reviews: a new worktree, unless the options page names a shared review workspace.
+    const { reviewWorkspace = "" } = await chrome.storage.local.get<{ reviewWorkspace?: string }>("reviewWorkspace");
+    const reviewWs = d?.review && reviewWorkspace && workspaces.some((w) => w.id === reviewWorkspace) ? reviewWorkspace : undefined;
+    workspaceSelect.value = d?.reuse === false ? reviewWs || newAt(target) : existing?.id || remembered || newAt(target);
   } else if (ticket) {
     const id = ticket.id;
     const onTicket = workspaces.filter((w) => isTicketWorkspace(w, id));
@@ -760,6 +763,15 @@ function closeNewForm() {
 const repoKey = (p: Pr) => `${p.owner}/${p.repo}`;
 const lastPrWorkspaces = async () => (await chrome.storage.local.get<{ prWorkspace?: Record<string, string> }>("prWorkspace")).prWorkspace ?? {};
 
+// Optional (chrome.storage.local `reviewLabel`): a new review worktree gets Paseo's workspace label "review", keeping its colour if
+// the label exists. Best effort: the session starts either way.
+async function labelReview(daemon: DaemonClient, workspaceId: string) {
+  const { reviewLabel } = await chrome.storage.local.get<{ reviewLabel?: boolean }>("reviewLabel");
+  if (!reviewLabel) return;
+  const color = (await daemon.listWorkspaceLabels().catch(() => null))?.labels.find((l) => l.name === "review")?.color ?? "violet";
+  await daemon.setWorkspaceLabel({ workspaceId, label: { name: "review", color }, assigned: true }).catch(() => {});
+}
+
 async function createSession(text: string, imgs: typeof images) {
   const config = {
     provider: modelSelect.value,
@@ -789,6 +801,7 @@ async function createSession(text: string, imgs: typeof images) {
   } else {
     workspace = api.workspaces.ref(id);
   }
+  if (pr && fresh && newDefaults?.review) void labelReview(chosenHost().daemon, workspace.id);
   if (pr) {
     const choice = fresh ? "" : workspaceSelect.value;
     void lastPrWorkspaces().then((all) => chrome.storage.local.set({ prWorkspace: { ...all, [repoKey(pr!)]: choice } }));

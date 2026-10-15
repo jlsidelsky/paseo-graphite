@@ -225,11 +225,12 @@ export function presetScope(p: Pick<Preset, "scope">, stack: number[], picked: S
 
 // What ＋ New suggests: a worktree on the topmost PR in scope (a review's default) or that PR's existing workspace
 // (Fix CI's and Feedback's), and the preset's model. null: fill the composer for the selected session instead.
-export type NewDefaults = { number: number; reuse: boolean; provider?: string; model?: string; effort?: string; mode?: string };
+// `review`: a review preset left on its default workspace, which follows the options page's review setting.
+export type NewDefaults = { number: number; reuse: boolean; review?: boolean; provider?: string; model?: string; effort?: string; mode?: string };
 export function newDefaultsFor(p: Preset, prs: number[]): NewDefaults | null {
   const where = p.workspace ?? (p.kind === "review" ? "new" : "existing");
   if (where === "selected") return null;
-  return { number: prs.at(-1)!, reuse: where === "existing", provider: p.model?.split("/")[0] ?? p.provider, model: p.model, effort: p.effort, mode: p.mode };
+  return { number: prs.at(-1)!, reuse: where === "existing", review: p.workspace === undefined && p.kind === "review", provider: p.model?.split("/")[0] ?? p.provider, model: p.model, effort: p.effort, mode: p.mode };
 }
 
 // One PR: its failing checks, or how to find them. Several: the same, headed per PR.

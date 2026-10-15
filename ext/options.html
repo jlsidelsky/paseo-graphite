@@ -71,6 +71,12 @@
     <div class="row"><button id="host-add">Add host</button><span style="flex: 1"></span><button id="hosts-save" class="primary">Save and reconnect</button></div>
   </section>
   <section>
+    <h2>Review sessions</h2>
+    <p>Where Review (and review commands) start a new session, unless a preset sets its own workspace. A new worktree has the PR checked out, so the agent can read files at the PR's version and run its tests, and parallel reviews don't share a checkout; it costs your repo's worktree setup. A shared workspace starts instantly; two reviews running in it at once can switch branches under each other.</p>
+    <div><select id="review-workspace"></select></div>
+    <label><input type="checkbox" id="review-label" /> Label new review worktrees <b>review</b> in Paseo</label>
+  </section>
+  <section>
     <h2>New PR sessions</h2>
     <p>When no workspace is on the PR yet, which is usually a teammate's PR you're reviewing, start the session in:</p>
     <select id="pr-workspace"></select>
