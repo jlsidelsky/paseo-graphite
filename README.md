@@ -7,7 +7,7 @@ Chrome side panel that lists the Paseo sessions on the Graphite or GitHub PR you
 - answer permission prompts, including agent questions (single or multiple choice, or your own answer) and plan approvals with the plan rendered; stop a running turn, and rewind to an earlier message;
 - change a session's permission mode;
 - see how full the session's context window is, as Paseo shows it (amber from 70%, red above 90%; hover for token counts). Only for sessions whose provider reports it, currently Claude;
-- start a new session in an existing workspace or a fresh worktree checked out to the PR, with a model, effort and mode picker; its first message starts with the PR link;
+- start a new session in an existing workspace or a fresh worktree checked out to the PR (or a [light one](#light-review-worktrees) that skips your repo's worktree setup), with a model, effort and mode picker; its first message starts with the PR link;
 - see sessions for the other PRs in the same stack;
 - on a Linear issue, see the sessions for that ticket (a workspace on a branch containing its ID, or a `ticket:<ID>` label) and start one in a fresh worktree on a branch named for the ticket, its first message the ticket title and link. The Linear page's **▶ Paseo** button opens that form;
 - anywhere else, see every session grouped into needs you, running and recently finished, and open any of them;
@@ -56,6 +56,20 @@ The panel can show Paseo on several machines at once, like the Paseo app: this o
 3. On the options page under **Paseo**, **Add host**: a label, its address (`ws://<host>:6767/ws`, or `wss://` behind TLS) and the password, then **Save and reconnect**. This machine's entry stays unless you remove it.
 
 An address set before hosts existed carries over as a second host next to this machine's. The same address listed twice is used once.
+
+### Light review worktrees
+
+A new worktree for a review runs your repo's Paseo worktree setup (its `paseo.json` `worktree.setup`: installing dependencies, databases, ports), which can take minutes for a session that only reads the diff. A light worktree skips it: the plugin fetches the PR and checks it out with `git worktree`, and the panel adds that directory to Paseo as a workspace in the repo's project. It's ready in a few seconds, and your repo's Paseo setup doesn't change.
+
+1. Install the plugin (step 3 above). If it was already installed, `paseo plugin reload paseo-graphite-pr-tags`.
+2. On the options page under **Review sessions**, pick **A light worktree (checkout only, no setup)**. **Label new review workspaces review** applies to these too.
+
+Review sessions then start in one, and the new-session form lists **Light worktree on PR #N (no setup)** next to each **New worktree** option. On a host where the plugin isn't running, you get a normal worktree, and the status line says why.
+
+- The worktree lives in `~/.paseo/review-worktrees/<repo>-<hash>/pr-<N>`, on the PR's head branch (or `review-pr-<N>` if a branch of that name already exists), tracking it on `origin`. So `gh pr view`, review commands that diff the current branch, and Paseo's PR link all find the PR. Starting another review of the same PR reuses the worktree, updated to the PR's latest commit, unless it has local changes.
+- Nothing is installed or built, so it's for reading and reviewing, not for running tests. Paseo can't run the setup later: it only runs setup on demand for a fork PR it blocked. A session in a light worktree shows **Full worktree** in the status line instead, which opens the new-session form on a normal worktree for the PR.
+- Archiving the workspace in Paseo removes the worktree and the branch the plugin made, if the worktree has no changes or untracked files; otherwise it stays, and `paseo plugin logs paseo-graphite-pr-tags` says so. The plugin never removes anything outside `review-worktrees`.
+- Fork PRs check out fine, but Paseo can't link the workspace to the PR (the head branch isn't on `origin`); the session's `pr:` label still puts it on the PR.
 
 ## How sessions are matched to a PR
 

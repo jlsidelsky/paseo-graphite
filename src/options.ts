@@ -235,18 +235,24 @@ type WsOption = { id: string; name: string; title?: string | null; projectDispla
 const wsName = (w: WsOption) => `${w.title ?? w.name}${w.projectDisplayName ? ` (${w.projectDisplayName})` : ""}${multiHost() ? ` · ${hostLabel(w.id)}` : ""}`;
 
 // Review sessions (a review preset on its default workspace): chrome.storage.local `reviewWorkspace`, "" for a new worktree
-// checked out to the PR, else a workspace key; `reviewLabel` labels those new worktrees "review" in Paseo.
+// checked out to the PR, "light" for a light one (the plugin's checkout, no setup), else a workspace key; `reviewLabel`
+// labels those new worktrees "review" in Paseo.
 async function renderReview(list: WsOption[]) {
   const select = $<HTMLSelectElement>("review-workspace");
   const label = $<HTMLInputElement>("review-label");
   const { reviewWorkspace = "", reviewLabel = false } = await chrome.storage.local.get<{ reviewWorkspace?: string; reviewLabel?: boolean }>(["reviewWorkspace", "reviewLabel"]);
   const option = (value: string, textContent: string) => Object.assign(document.createElement("option"), { value, textContent });
-  select.replaceChildren(option("", "A new worktree checked out to the PR"), ...list.map((w) => option(w.id, `Always ${wsName(w)}`)));
+  select.replaceChildren(
+    option("", "A new worktree checked out to the PR"),
+    option("light", "A light worktree (checkout only, no setup)"),
+    ...list.map((w) => option(w.id, `Always ${wsName(w)}`)),
+  );
   if (![...select.options].some((o) => o.value === reviewWorkspace)) select.append(option(reviewWorkspace, "A workspace Paseo doesn't list right now"));
   select.value = reviewWorkspace;
   label.checked = reviewLabel;
-  label.disabled = !!select.value;
-  select.onchange = () => ((label.disabled = !!select.value), void chrome.storage.local.set({ reviewWorkspace: select.value }));
+  const shared = () => !!select.value && select.value !== "light";
+  label.disabled = shared();
+  select.onchange = () => ((label.disabled = shared()), void chrome.storage.local.set({ reviewWorkspace: select.value }));
   label.onchange = () => void chrome.storage.local.set({ reviewLabel: label.checked });
 }
 

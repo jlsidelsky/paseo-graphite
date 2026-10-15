@@ -72,9 +72,9 @@
   </section>
   <section>
     <h2>Review sessions</h2>
-    <p>Where Review (and review commands) start a new session, unless a preset sets its own workspace. A new worktree has the PR checked out, so the agent can read files at the PR's version and run its tests, and parallel reviews don't share a checkout; it costs your repo's worktree setup. A shared workspace starts instantly; two reviews running in it at once can switch branches under each other.</p>
+    <p>Where Review (and review commands) start a new session, unless a preset sets its own workspace. A new worktree has the PR checked out, so the agent can read files at the PR's version and run its tests, and parallel reviews don't share a checkout; it costs your repo's worktree setup. A light worktree is a plain checkout of the PR that skips that setup, so it's ready in seconds, but nothing is installed or built: fine for reading the diff, not for running tests. It needs the plugin; without it you get a normal worktree. A shared workspace starts instantly; two reviews running in it at once can switch branches under each other.</p>
     <div><select id="review-workspace"></select></div>
-    <label><input type="checkbox" id="review-label" /> Label new review worktrees <b>review</b> in Paseo</label>
+    <label><input type="checkbox" id="review-label" /> Label new review workspaces <b>review</b> in Paseo</label>
   </section>
   <section>
     <h2>New PR sessions</h2>

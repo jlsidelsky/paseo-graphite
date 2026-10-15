@@ -37,6 +37,7 @@ import {
   isPrWorkspace as onPr,
   isRepo,
   isTicketWorkspace,
+  lightReviewPr,
   parsePr,
   parseTicket,
   prLabel,
@@ -54,6 +55,10 @@ import {
 } from "./pr";
 
 const NEW_WORKTREE = "__new__";
+// A light review worktree: the plugin checks out the PR, Paseo adds it as a workspace without running setup.
+const LIGHT = "__light__";
+const PLUGIN_ID = "paseo-graphite-pr-tags";
+const freshPrefix = (v: string) => [NEW_WORKTREE, LIGHT].find((p) => v.startsWith(p));
 
 // html:false renders raw HTML as text, and markdown-it refuses javascript: links; agent text never runs in this page.
 const md = new MarkdownIt({ linkify: true });
@@ -66,6 +71,8 @@ const effortSelect = $<HTMLSelectElement>("effort-select");
 const timeline = $<HTMLDivElement>("timeline");
 const statusText = $<HTMLSpanElement>("status-text");
 const openInPaseo = $<HTMLAnchorElement>("open-in-paseo");
+const fullWorktree = $<HTMLAnchorElement>("full-worktree");
+let fullWorktreePr: number | null = null;
 const prompt = $<HTMLTextAreaElement>("prompt");
 const sendBtn = $<HTMLButtonElement>("send-btn");
 const newBtn = $<HTMLButtonElement>("new-btn");
@@ -318,6 +325,9 @@ function selectAgent(id: string | null) {
   document.body.classList.toggle("archived", !!listed().find((a) => a.id === id)?.archivedAt);
   timeline.replaceChildren();
   openInPaseo.hidden = !id;
+  const ws = workspaces.find((w) => w.id === listed().find((a) => a.id === id)?.workspaceId);
+  fullWorktreePr = pr && lightReviewPr(ws?.workspaceDirectory) === pr.number ? pr.number : null;
+  fullWorktree.hidden = !fullWorktreePr;
   search.hidden = !!(id || pr || ticket);
   if (!id) {
     setStatus(viewName());
@@ -651,9 +661,15 @@ async function openNewForm() {
     // A new worktree on each host with a workspace in the repo, the first one by default.
     const found = [...new Set(workspaces.filter((w) => isRepo(w, pr!)).map((w) => splitKey(w.id).host))];
     const hosts = found.length ? found : [conns[0]?.host.id ?? LOCAL.id];
-    const newAt = (n: number, host = hosts[0]) => NEW_WORKTREE + keyOf(host, String(n));
+    const newAt = (n: number, host = hosts[0], kind = NEW_WORKTREE) => kind + keyOf(host, String(n));
+    // Reviews: a new worktree, a light one (opted into on the options page), or a shared review workspace.
+    const { reviewWorkspace = "" } = await chrome.storage.local.get<{ reviewWorkspace?: string }>("reviewWorkspace");
+    const light = reviewWorkspace === "light";
     const checkout = (n: number, title = "") =>
-      hosts.map((h) => el("option", { value: newAt(n, h), textContent: `New worktree checked out to PR #${n}${title && ` ${title}`}${hostTag(keyOf(h, ""))}` }));
+      hosts.flatMap((h) => [
+        el("option", { value: newAt(n, h), textContent: `New worktree checked out to PR #${n}${title && ` ${title}`}${hostTag(keyOf(h, ""))}` }),
+        ...(light ? [el("option", { value: newAt(n, h, LIGHT), textContent: `Light worktree on PR #${n}${title && ` ${title}`} (no setup)${hostTag(keyOf(h, ""))}` })] : []),
+      ]);
     workspaceSelect.replaceChildren(
       ...(prWs.length ? [el("optgroup", { label: `On PR #${pr.number}` }, ...prWs.map(option))] : []),
       ...checkout(pr.number),
@@ -666,9 +682,7 @@ async function openNewForm() {
     const { prWorkspaceMode: mode = "last" } = await chrome.storage.local.get<{ prWorkspaceMode?: string }>("prWorkspaceMode");
     const last = mode === "last" ? (await lastPrWorkspaces())[repoKey(pr)] : mode === "new" ? "" : mode;
     const remembered = last && workspaces.some((w) => w.id === asKey(last)) ? asKey(last) : undefined;
-    // Reviews: a new worktree, unless the options page names a shared review workspace.
-    const { reviewWorkspace = "" } = await chrome.storage.local.get<{ reviewWorkspace?: string }>("reviewWorkspace");
-    const reviewWs = d?.review && reviewWorkspace && workspaces.some((w) => w.id === reviewWorkspace) ? reviewWorkspace : undefined;
+    const reviewWs = d?.review && workspaces.some((w) => w.id === reviewWorkspace) ? reviewWorkspace : d?.review && light ? newAt(target, hosts[0], LIGHT) : undefined;
     workspaceSelect.value = d?.reuse === false ? reviewWs || newAt(target) : existing?.id || remembered || newAt(target);
   } else if (ticket) {
     const id = ticket.id;
@@ -691,7 +705,7 @@ async function openNewForm() {
 // The chosen workspace's (or new worktree's) host.
 const chosenHost = () => {
   const v = workspaceSelect.value;
-  return on(v.startsWith(NEW_WORKTREE) ? v.slice(NEW_WORKTREE.length) : v);
+  return on(v.slice(freshPrefix(v)?.length ?? 0));
 };
 
 // Models, efforts and modes from the chosen workspace's host. `keep`: the model picked so far, where that host has it.
@@ -772,26 +786,51 @@ async function labelReview(daemon: DaemonClient, workspaceId: string) {
   await daemon.setWorkspaceLabel({ workspaceId, label: { name: "review", color }, assigned: true }).catch(() => {});
 }
 
+// A light review worktree through the plugin, added to Paseo as a plain directory, so the repo's worktree setup doesn't run.
+// Null when the plugin can't (not installed or too old on that host, say): the caller makes a normal worktree instead,
+// and the status line says so once per host.
+const lightFallbackShown = new Set<string>();
+let lightFallback = "";
+async function lightWorktree(api: Paseo, daemon: DaemonClient, hostId: string, repoRoot: string, projectId: string, number: number) {
+  setStatus("Checking out the PR…");
+  timeline.replaceChildren(el("div", { className: "empty", textContent: `Checking out PR #${number} in a light worktree.` }));
+  try {
+    const { path } = (await daemon.invokePluginRpc(PLUGIN_ID, "review.worktree.create", { repoRoot, number })) as { path: string };
+    return await api.workspaces.create({ source: { kind: "directory", path, projectId } });
+  } catch (err) {
+    if (!lightFallbackShown.has(hostId)) {
+      lightFallbackShown.add(hostId);
+      lightFallback = `No light worktree (${err instanceof Error ? err.message.replace(/ requestType=.*$/, "") : String(err)}), so a full one. Is the plugin installed and reloaded?`;
+    }
+    return null;
+  }
+}
+
 async function createSession(text: string, imgs: typeof images) {
   const config = {
     provider: modelSelect.value,
     ...(effortSelect.value ? { thinkingOptionId: effortSelect.value } : {}),
     ...(modeSelect.value && !modeSelect.hidden ? { modeId: modeSelect.value } : {}),
   };
-  // A new worktree's value is NEW_WORKTREE + <host>:<PR number or project root>; a workspace's is its id.
-  const fresh = workspaceSelect.value.startsWith(NEW_WORKTREE);
-  const { host, api, id } = chosenHost();
+  // A new worktree's value is NEW_WORKTREE (or LIGHT) + <host>:<PR number or project root>; a workspace's is its id.
+  const prefix = freshPrefix(workspaceSelect.value);
+  const fresh = !!prefix;
+  const { host, api, daemon, id } = chosenHost();
   let workspace;
   if (pr && fresh) {
     const target = pr;
     const number = Number(id);
-    const repoRoot = workspaces.find((w) => splitKey(w.id).host === host.id && isRepo(w, target))?.projectRootPath;
-    if (!repoRoot) throw new Error(`No Paseo project for ${pr.owner}/${pr.repo}`);
-    setStatus("Creating worktree…");
-    timeline.replaceChildren(el("div", { className: "empty", textContent: `Creating a worktree for PR #${number}. This takes a few seconds.` }));
-    workspace = await api.workspaces.create({
-      source: { kind: "worktree", cwd: repoRoot, action: "checkout", checkoutSource: { kind: "change_request", forge: "github", number } },
-    });
+    const repoWs = workspaces.find((w) => splitKey(w.id).host === host.id && isRepo(w, target));
+    if (!repoWs?.projectRootPath) throw new Error(`No Paseo project for ${pr.owner}/${pr.repo}`);
+    const repoRoot = repoWs.projectRootPath;
+    if (prefix === LIGHT) workspace = await lightWorktree(api, daemon, host.id, repoRoot, repoWs.projectId, number);
+    if (!workspace) {
+      setStatus("Creating worktree…");
+      timeline.replaceChildren(el("div", { className: "empty", textContent: `Creating a worktree for PR #${number}. This takes a few seconds.` }));
+      workspace = await api.workspaces.create({
+        source: { kind: "worktree", cwd: repoRoot, action: "checkout", checkoutSource: { kind: "change_request", forge: "github", number } },
+      });
+    }
   } else if (ticket && fresh) {
     const branchName = ticketBranch(ticket);
     setStatus("Creating worktree…");
@@ -817,6 +856,7 @@ async function createSession(text: string, imgs: typeof images) {
   unsubscribeTimeline?.();
   unsubscribeTimeline = null;
   await loadSessions();
+  if (lightFallback) setStatus(lightFallback), (lightFallback = "");
 }
 
 // ponytail: 5 MB of base64 per image is Claude's API cap; the Paseo schema sets none, and other providers may allow more.
@@ -1430,6 +1470,14 @@ prompt.ondrop = (e) => {
   if (!e.dataTransfer?.files.length) return;
   e.preventDefault();
   addImages(e.dataTransfer.files);
+};
+// A light worktree can't get the repo's setup afterwards (Paseo only runs setup on demand for blocked fork PRs), so this
+// opens ＋ New on a full worktree for the PR instead.
+fullWorktree.onclick = (e) => {
+  e.preventDefault();
+  if (!fullWorktreePr) return;
+  newDefaults = { number: fullWorktreePr, reuse: false };
+  void openNewForm();
 };
 openInPaseo.onclick = (e) => {
   e.preventDefault();

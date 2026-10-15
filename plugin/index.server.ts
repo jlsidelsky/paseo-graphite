@@ -1,8 +1,11 @@
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import { defineRpc } from "@getpaseo/plugin";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
+import { createReviewWorktree, removeReviewWorktree, reviewNumber } from "./server/review";
 import { prsInTimeline } from "./server/rules";
 
 const home = process.env.PASEO_HOME ?? join(homedir(), ".paseo");
@@ -15,6 +18,33 @@ const listen = (() => {
     return "127.0.0.1:6767";
   }
 })();
+
+// The panel's light review worktrees (server/review.ts).
+const createReview = defineRpc({
+  name: "review.worktree.create",
+  input: z.object({ repoRoot: z.string().startsWith("/"), number: z.number().int().positive() }),
+  output: z.object({ path: z.string(), branch: z.string() }),
+});
+
+function registerReview(server: PluginServerContext, daemon: DaemonClient, ready: Promise<unknown>, home: string) {
+  server.handle(createReview, async ({ repoRoot, number }) => {
+    await ready;
+    // The PR's head branch, for the local branch to track, from Paseo's own GitHub search (no gh needed).
+    const found = await daemon.searchForge({ cwd: repoRoot, query: String(number), limit: 10, kinds: ["pr"] }).catch(() => null);
+    const head = (found?.items as { number: number; headRefName?: string }[] | undefined)?.find((i) => i.number === number)?.headRefName ?? null;
+    const out = await createReviewWorktree(home, repoRoot, number, head);
+    console.log(`review worktree for #${number}: ${out.path}${head ? ` tracking ${head}` : ""}`);
+    return out;
+  });
+
+  server.on("workspace.archived", async ({ workspace }) => {
+    if (reviewNumber(home, workspace.cwd) === null) return;
+    await removeReviewWorktree(workspace.cwd).then(
+      () => console.log(`removed review worktree ${workspace.cwd}`),
+      (err) => console.error(`kept review worktree ${workspace.cwd}: ${err instanceof Error ? err.message.trim() : err}`),
+    );
+  });
+}
 
 type Item = { type: string; detail?: unknown };
 
@@ -64,6 +94,8 @@ export default function contribute(server: PluginServerContext) {
     await ready;
     await scan(agent.id, agent.cwd, timeline, agent.parentAgentId).catch((err) => console.error(`scan ${agent.id} failed:`, err));
   });
+
+  registerReview(server, daemon, ready, home);
 
   // Catch up on sessions updated since the last run; the first run covers everything, including archived sessions.
   void (async () => {

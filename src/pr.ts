@@ -21,6 +21,9 @@ export function isRepo(w: Workspace, target: Pr) {
   return (w.gitRuntime?.remoteUrl ?? "").toLowerCase().includes(`/${target.owner}/${target.repo}`);
 }
 
+// The PR a light review worktree (the plugin's `<paseo home>/review-worktrees/<repo>/pr-<n>`) is for, else null.
+export const lightReviewPr = (dir: string | null | undefined) => Number(dir?.match(/[\\/]review-worktrees[\\/][^\\/]+[\\/]pr-(\d+)$/)?.[1]) || null;
+
 export function isPrWorkspace(w: Workspace, target: Pr | null) {
   return !!target && w.githubRuntime?.pullRequest?.number === target.number && isRepo(w, target);
 }
