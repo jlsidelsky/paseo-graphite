@@ -3,12 +3,14 @@
 // On Graphite, PRs in one stack within a section group under a header row (see "Stacks" below).
 
 // ---- Graphite inbox (app.graphite.com/, or wherever the same blocks show up) ----
-// Each section has a header with a searchbox named "Search <Section name>" (section names are user-set), followed by a <table>
+// Each section is a [data-testclass="review-queue-section"] block, labelled by its name (user-set) through aria-labelledby;
+// older layouts instead put a searchbox named "Search <Section name>" in the header. Either way a <table> follows
 // with one <tr> per PR when it's expanded and not empty. The title cell holds an <a> with the title, linking to
 // /github/pr/<Owner>/<repo>/<n>/<slug>, and under it a line "author · owner/repo #n", which may go on with "1 label" and a
 // stack-position button like "1/4". Class names are generated, so only roles, labels and tags are used. The pill goes at the
 // start of that subtitle line, so truncated titles and the narrow (560px) layout keep working. Rows are React's: we only add
 // attributes and children to them, our own header <tr>s between them, and reorder them within their <tbody> (never remove them).
+const SECTION_BLOCK = '[data-testclass="review-queue-section"]';
 const SECTION = 'input[aria-label^="Search "], [role="searchbox"][aria-label^="Search "], input[placeholder^="Search "]';
 
 function graphiteRows() {
@@ -16,10 +18,18 @@ function graphiteRows() {
   let section = null;
   let search = "";
   let sectionIndex = -1;
-  for (const node of document.querySelectorAll(`${SECTION}, table`)) {
+  for (const node of document.querySelectorAll(`${SECTION_BLOCK}, ${SECTION}, table`)) {
+    if (node.matches(SECTION_BLOCK)) {
+      section = document.getElementById(node.getAttribute("aria-labelledby"))?.textContent.trim() || null;
+      search = "";
+      sectionIndex++;
+      continue;
+    }
     if (node.tagName !== "TABLE") {
-      section = (node.getAttribute("aria-label") || node.getAttribute("placeholder")).slice(7).trim();
       search = node.value?.trim() ?? "";
+      // A searchbox inside a section block only carries its search text.
+      if (node.closest(SECTION_BLOCK)) continue;
+      section = (node.getAttribute("aria-label") || node.getAttribute("placeholder")).slice(7).trim();
       sectionIndex++;
       continue;
     }
