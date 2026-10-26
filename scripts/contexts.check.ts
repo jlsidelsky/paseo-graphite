@@ -1,6 +1,6 @@
 // node scripts/contexts.check.ts
 import assert from "node:assert/strict";
-import { agentsOnTicket, branchHasTicket, groupAll, parseTicket, ticketBranch, ticketTitle } from "../src/pr.ts";
+import { agentsOnTicket, branchHasTicket, graphiteUrl, groupAll, parseTicket, ticketBranch, ticketPrs, ticketTitle } from "../src/pr.ts";
 
 assert.deepEqual(parseTicket("https://linear.app/acme/issue/eng-123/store-the-thing?x=1"), {
   id: "ENG-123",
@@ -46,3 +46,18 @@ const g = groupAll([
 const ids = (l: { id: string }[]) => l.map((a) => a.id);
 assert.deepEqual([ids(g.needs), ids(g.running), ids(g.finished)], [["asks"], ["runs"], ["new", "old"]]);
 console.log("contexts ok");
+
+// The Linear page's Graphite button: a ticket's PRs from forge search hits.
+assert.equal(graphiteUrl("https://github.com/acme/app/pull/42"), "https://app.graphite.com/github/pr/acme/app/42");
+const hit = (number: number, title: string, state: string, updatedAt: string, headRefName?: string) => ({ number, title, state, updatedAt, headRefName, url: `https://github.com/acme/app/pull/${number}` });
+const prs = ticketPrs(
+  [
+    hit(1, "fix(api): old attempt (ENG-123)", "MERGED", "2026-01-02"),
+    hit(2, "feat: the real one", "OPEN", "2026-01-01", "alice/eng-123-thing"),
+    hit(3, "unrelated, mentions ENG-1234", "OPEN", "2026-01-05"),
+    hit(2, "feat: the real one", "OPEN", "2026-01-01", "alice/eng-123-thing"),
+  ],
+  "ENG-123",
+);
+assert.deepEqual(prs.map((p) => p.number), [2, 1]);
+assert.equal(prs[0].graphite, "https://app.graphite.com/github/pr/acme/app/2");

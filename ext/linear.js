@@ -1,4 +1,4 @@
-// "▶ Paseo" on Linear issue pages: opens the panel's new-session form for the ticket.
+// "▶ Paseo" on Linear issue pages: opens the panel's new-session form for the ticket. Next to it, "↗ Graphite" opens its PR there.
 {
   // ---- Linear DOM knowledge: fix selectors here. All guesses; Linear's class names are generated. ----
   // The icon buttons at the top right of an issue (copy issue URL / ID / git branch name). The button goes before the first.
@@ -87,21 +87,76 @@
     "all:initial;display:inline-flex;align-items:center;gap:5px;cursor:pointer;font:500 12px system-ui,sans-serif;" +
     "padding:3px 9px;border-radius:6px;background:#1f2023;color:#e8e8ea;border:1px solid #3a3b40;";
 
+  btn.style.cssText = BASE;
+
+  // "Graphite" next to it: the ticket's PRs, found through Paseo's forge search (title or branch has the ticket id), opened on
+  // Graphite in a new tab. One PR opens directly; several get a menu, open ones first. Hidden when there are none.
+  const gt = document.createElement("button");
+  gt.style.cssText = BASE;
+  let prs = [];
+  let prsFor = "";
+  let menu = null;
+  const closeMenu = () => (menu?.remove(), (menu = null));
+  gt.onclick = (e) => {
+    e.stopPropagation();
+    if (prs.length === 1) return void window.open(prs[0].graphite, "_blank");
+    if (menu) return closeMenu();
+    const r = gt.getBoundingClientRect();
+    menu = document.createElement("div");
+    menu.style.cssText =
+      `all:initial;position:fixed;top:${r.bottom + 4}px;right:${Math.max(8, innerWidth - r.right)}px;z-index:2147483647;display:flex;` +
+      "flex-direction:column;min-width:240px;max-width:420px;padding:4px;border-radius:8px;background:#1f2023;border:1px solid #3a3b40;" +
+      "box-shadow:0 4px 16px rgba(0,0,0,.35);font:500 12px system-ui,sans-serif;";
+    for (const p of prs) {
+      const a = Object.assign(document.createElement("a"), { href: p.graphite, target: "_blank", title: p.title });
+      a.style.cssText = "all:initial;display:block;padding:5px 8px;border-radius:5px;color:#e8e8ea;font:inherit;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+      a.onmouseenter = () => (a.style.background = "#2c2d31");
+      a.onmouseleave = () => (a.style.background = "none");
+      a.textContent = `#${p.number} ${p.title}${p.state.toUpperCase() === "OPEN" ? "" : ` · ${p.state.toLowerCase()}`}`;
+      a.onclick = closeMenu;
+      menu.append(a);
+    }
+    document.body.append(menu);
+  };
+  addEventListener("click", (e) => menu && !menu.contains(e.target) && closeMenu());
+
+  async function loadPrs(id) {
+    prsFor = id;
+    prs = [];
+    const res = await chrome.runtime.sendMessage({ type: "ticket-prs", id }).catch(() => null);
+    if (prsFor !== id) return;
+    // null: Paseo not reachable yet; ask again on the next tick.
+    if (!Array.isArray(res)) return void (prsFor = "");
+    prs = res;
+    gt.textContent = prs.length === 1 ? `↗ Graphite #${prs[0].number}` : `↗ Graphite (${prs.length}) ▾`;
+    const label = prs.length === 1 ? `Open #${prs[0].number} on Graphite` : `Open one of this issue's ${prs.length} PRs on Graphite`;
+    gt.title = label;
+    gt.setAttribute("aria-label", label);
+  }
+
+  // Both buttons sit together in the toolbar (or pinned top right).
+  const wrap = document.createElement("span");
+  wrap.append(btn);
+
   let lastUrl = "";
   let since = 0;
   // ponytail: polls like content.js; Linear is an SPA and re-renders the toolbar, which can drop the button.
   setInterval(() => {
-    if (location.href !== lastUrl) (lastUrl = location.href), (since = Date.now());
-    if (!issueId()) return btn.remove();
+    if (location.href !== lastUrl) (lastUrl = location.href), (since = Date.now()), closeMenu();
+    const id = issueId();
+    if (!id) return wrap.remove();
+    if (prsFor !== id) void loadPrs(id);
+    if (prs.length && !gt.isConnected) wrap.append(gt);
+    if (!prs.length) gt.remove();
     const anchor = document.querySelector(TOOLBAR_BUTTON);
     if (anchor) {
-      if (btn.nextElementSibling === anchor) return;
-      btn.style.cssText = BASE + "margin-right:6px;";
-      anchor.before(btn);
-    } else if (!btn.isConnected && Date.now() - since > 3000) {
+      if (wrap.nextElementSibling === anchor) return;
+      wrap.style.cssText = "all:initial;display:inline-flex;align-items:center;gap:6px;margin-right:6px;";
+      anchor.before(wrap);
+    } else if (!wrap.isConnected && Date.now() - since > 3000) {
       // Toolbar not found after the page settled: pin to the viewport's top right instead.
-      btn.style.cssText = BASE + "position:fixed;top:10px;right:16px;z-index:2147483647;box-shadow:0 2px 8px rgba(0,0,0,.3);";
-      document.body.append(btn);
+      wrap.style.cssText = "all:initial;display:inline-flex;gap:6px;position:fixed;top:10px;right:16px;z-index:2147483647;";
+      document.body.append(wrap);
     }
   }, 1000);
 }

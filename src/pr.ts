@@ -119,6 +119,22 @@ export const ticketLabel = (id: string) => `ticket:${id}`;
 export const branchHasTicket = (branch: string | null | undefined, id: string) =>
   !!branch && new RegExp(`(^|[^a-z0-9])${id}(?![a-z0-9])`, "i").test(branch);
 
+export type TicketPr = { number: number; title: string; url: string; state: string; graphite: string; updatedAt?: string };
+export type ForgeItem = { number: number; title: string; url: string; state: string; body?: string | null; headRefName?: string | null; updatedAt?: string };
+
+// GitHub's PR URL as Graphite's: github.com/<owner>/<repo>/pull/<n> → app.graphite.com/github/pr/<owner>/<repo>/<n>.
+export const graphiteUrl = (url: string) => url.replace(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+).*$/, "https://app.graphite.com/github/pr/$1/$2/$3");
+
+// A ticket's PRs among forge search hits: the id in the title or head branch (a body only mentioning it doesn't count). Open
+// first, then most recently updated; one per URL.
+export function ticketPrs(items: ForgeItem[], id: string): TicketPr[] {
+  const mine = items.filter((i) => branchHasTicket(i.title, id) || branchHasTicket(i.headRefName, id));
+  const open = (i: ForgeItem) => (i.state.toUpperCase() === "OPEN" ? 0 : 1);
+  return [...new Map(mine.map((i) => [i.url, i])).values()]
+    .sort((a, b) => open(a) - open(b) || (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))
+    .map(({ number, title, url, state, updatedAt }) => ({ number, title, url, state, updatedAt, graphite: graphiteUrl(url) }));
+}
+
 export const isTicketWorkspace = (w: Workspace, id: string) =>
   branchHasTicket(w.gitRuntime?.currentBranch, id) || branchHasTicket(w.githubRuntime?.pullRequest?.headRefName, id);
 

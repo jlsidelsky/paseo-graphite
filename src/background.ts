@@ -1,6 +1,6 @@
 import type { PaseoAgent } from "@getpaseo/client";
 import { connectHosts, conns, isUp, keyOf, on, tagAgent, tagWorkspace, type Conn } from "./hosts";
-import { agentsOnPr, alertFor, ciAlertFor, groupStacks, isPrWorkspace, isRepo, parsePr, rowAuthor, rowPr, SETTINGS, type Alert, type Pr, type Workspace } from "./pr";
+import { agentsOnPr, alertFor, ciAlertFor, groupStacks, isPrWorkspace, isRepo, parsePr, rowAuthor, rowPr, SETTINGS, ticketPrs, type Alert, type Pr, type ForgeItem, type TicketPr, type Workspace } from "./pr";
 
 void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
@@ -152,6 +152,30 @@ function cached<T>(cache: Map<string, { at: number; p: Promise<T> }>, key: strin
   return p;
 }
 
+// A Linear ticket's PRs, for the Graphite button on its page: a forge search per repo Paseo knows (one workspace each, on its
+// host), kept 2 minutes. null when Paseo isn't reachable.
+const ticketCache = new Map<string, { at: number; p: Promise<TicketPr[] | null> }>();
+function prsForTicket(id: string) {
+  const hit = ticketCache.get(id);
+  if (hit && Date.now() - hit.at < 2 * 60_000) return hit.p;
+  const p = (async () => {
+    if (!(await ready()) || !(await synced())) return null;
+    const repos = new Map([...workspaces.values()].filter((w) => w.gitRuntime?.remoteUrl).map((w) => [w.gitRuntime!.remoteUrl!.toLowerCase(), w]));
+    // Paseo's search returns open PRs unless asked for closed (merged included) ones.
+    const found = await Promise.all(
+      [...repos.values()].flatMap((w) =>
+        [id, `${id} is:closed`].map((query) =>
+          on(w.id).daemon.searchForge({ cwd: w.workspaceDirectory, query, limit: 20, kinds: ["pr"] }).then((r) => r.items as ForgeItem[], (): ForgeItem[] => []),
+        ),
+      ),
+    );
+    return ticketPrs(found.flat(), id);
+  })();
+  ticketCache.set(id, { at: Date.now(), p });
+  p.then((r) => r ?? ticketCache.delete(id), () => ticketCache.delete(id));
+  return p;
+}
+
 // Inbox rows (from ext/inbox.js) as the panel sends them; `stacks[].rows` index into them.
 async function inboxStacks(raw: { href?: string; sub?: string; title?: string; section?: string }[]) {
   if (!(await ready()) || !(await synced())) return null;
@@ -292,6 +316,10 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     return;
   }
   // From ext/linear.js; the panel reads the key, opens its new-session form for the ticket, and removes it.
+  if (msg.type === "ticket-prs" && typeof msg.id === "string") {
+    prsForTicket(msg.id).then(reply, () => reply(null));
+    return true;
+  }
   if (msg.type === "start-session" && sender.tab && typeof msg.ticket?.id === "string") {
     void chrome.sidePanel.open({ windowId: sender.tab.windowId });
     void chrome.storage.session.set({ [`start:${sender.tab.windowId}`]: { ...msg.ticket, at: Date.now() } });
